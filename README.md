@@ -17,7 +17,9 @@ Tauri 2 (Rust) + React + TypeScript + Vite. ffmpeg/ffprobe с NVENC подклю
 
 - Node.js LTS
 - Rust (rustup, toolchain `stable-x86_64-pc-windows-msvc`)
-- Visual Studio 2022 Build Tools с компонентом «Разработка классических приложений на C++»
+- Компилятор C++, на выбор:
+  - Visual Studio Build Tools 2022+ с компонентом «Разработка классических приложений на C++» (toolchain `stable-x86_64-pc-windows-msvc`), или
+  - MinGW-w64 (`winget install BrechtSanders.WinLibs.POSIX.MSVCRT`) и toolchain `stable-x86_64-pc-windows-gnu` (`rustup override set stable-x86_64-pc-windows-gnu` в `src-tauri`). В этом варианте путь к проекту должен быть только из латинских символов: инструменты MinGW не открывают файлы по кириллическим путям.
 - WebView2 (в Windows 11 уже есть)
 - GeForce RTX 20xx или новее, драйвер 551+
 

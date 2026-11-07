@@ -16,7 +16,9 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
+    // Bind to IPv4 explicitly: on newer Node "localhost" resolves to ::1,
+    // and the Tauri CLI waits for the dev server on 127.0.0.1.
+    host: host || "127.0.0.1",
     hmr: host
       ? {
           protocol: "ws",
