@@ -1,0 +1,362 @@
+<title>Clipforge — план и макет</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: документ-план сверху вниз, в середине — макет окна приложения (тёмное окно в обоих темах страницы) */
+:root{
+  --bg:#f3f4f7; --surface:#ffffff; --fg:#151821; --muted:#5d6475; --line:#dde0e8;
+  --accent:#2f6bff; --accent-soft:#e3ebff; --ok:#14874f; --warn:#b26a00;
+  --win-bg:#0f1117; --win-panel:#171a23; --win-line:#262b38; --win-fg:#e7e9f0; --win-muted:#8a91a5; --win-accent:#5b8cff; --win-ok:#3ccf8e; --win-warn:#f2b44c;
+  --f-body:"Onest",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0c0e13; --surface:#141720; --fg:#e8eaf1; --muted:#9097aa; --line:#252a36;
+  --accent:#6f97ff; --accent-soft:#1b2440; --ok:#3ccf8e; --warn:#f2b44c; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0c0e13; --surface:#141720; --fg:#e8eaf1; --muted:#9097aa; --line:#252a36;
+  --accent:#6f97ff; --accent-soft:#1b2440; --ok:#3ccf8e; --warn:#f2b44c; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:16px/1.6 var(--f-body);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:40px 80px}
+.wrap{max-width:1040px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+h1,h2,h3{text-wrap:balance;line-height:1.2;margin:0}
+h1{font-size:clamp(28px,4vw,40px);font-weight:700;letter-spacing:-.02em}
+h2{font-size:24px;font-weight:700;letter-spacing:-.01em}
+h3{font-size:17px;font-weight:600}
+p{margin:0;max-width:68ch}
+.eyebrow{font:500 12px/1 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.lead{color:var(--muted);font-size:18px}
+section{display:flex;flex-direction:column;gap:20px}
+code,.mono{font-family:var(--f-mono);font-size:.88em}
+code{background:var(--accent-soft);padding:1px 6px;border-radius:4px}
+.note{border-left:3px solid var(--warn);padding:12px 16px;background:var(--surface);border-radius:0 8px 8px 0;color:var(--fg)}
+.note strong{color:var(--warn)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.box ul{margin:0;padding-left:18px;color:var(--muted)}
+.box li{margin:4px 0}
+table{border-collapse:collapse;width:100%;font-size:15px}
+.tbl{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:500 12px var(--f-mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+tr:last-child td{border-bottom:0}
+.phases{display:flex;flex-direction:column;gap:0;border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.phase{display:grid;grid-template-columns:110px 1fr;gap:16px;padding:18px 20px;border-bottom:1px solid var(--line)}
+.phase:last-child{border-bottom:0}
+.phase .tag{font:500 13px var(--f-mono);color:var(--accent)}
+.phase ul{margin:6px 0 0;padding-left:18px;color:var(--muted)}
+@media (max-width:560px){.phase{grid-template-columns:1fr;gap:4px}}
+pre.tree{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 20px;overflow-x:auto;font:13px/1.6 var(--f-mono);margin:0;color:var(--fg)}
+
+/* ===== Макет окна ===== */
+.win{background:var(--win-bg);color:var(--win-fg);border-radius:14px;border:1px solid var(--win-line);overflow:hidden;box-shadow:0 20px 50px -20px rgba(0,0,0,.45);font-size:14px;color-scheme:dark}
+.titlebar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--win-line);background:var(--win-panel)}
+.titlebar .name{font-weight:600}
+.titlebar .sp{flex:1}
+.gpu{display:flex;align-items:center;gap:8px;font:12px var(--f-mono);color:var(--win-muted);flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--win-ok);box-shadow:0 0 0 3px rgba(60,207,142,.18)}
+.app{display:grid;grid-template-columns:180px 1fr 300px;min-height:540px}
+.side{border-right:1px solid var(--win-line);padding:12px 8px;display:flex;flex-direction:column;gap:2px}
+.nav{all:unset;cursor:pointer;padding:9px 12px;border-radius:7px;color:var(--win-muted);display:flex;justify-content:space-between}
+.nav:hover{background:#1d2130;color:var(--win-fg)}
+.nav.on{background:#1f2640;color:var(--win-fg)}
+.nav:focus-visible{outline:2px solid var(--win-accent)}
+.badge{font:11px var(--f-mono);background:#262b38;padding:1px 7px;border-radius:10px}
+.main{padding:18px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.drop{border:1.5px dashed #343a4b;border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:12px;color:var(--win-muted)}
+.drop b{color:var(--win-fg);font-weight:500}
+.file{background:var(--win-panel);border:1px solid var(--win-line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:12px}
+.file-h{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.chip{font:11px var(--f-mono);padding:3px 8px;border-radius:5px;background:#262b38;color:var(--win-muted)}
+.chip.ok{background:rgba(60,207,142,.14);color:var(--win-ok)}
+.chip.warn{background:rgba(242,180,76,.14);color:var(--win-warn)}
+.specs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.spec{background:var(--win-bg);border-radius:7px;padding:8px 10px}
+.spec .k{font:10px var(--f-mono);text-transform:uppercase;letter-spacing:.06em;color:var(--win-muted)}
+.spec .v{font:500 13px var(--f-mono);font-variant-numeric:tabular-nums}
+.compare{position:relative;aspect-ratio:16/9;max-width:100%;border-radius:8px;overflow:hidden;background:#000}
+.compare canvas{position:absolute;inset:0;width:100%;height:100%}
+.compare .cut{position:absolute;inset:0;clip-path:inset(0 50% 0 0)}
+.compare .bar{position:absolute;top:0;bottom:0;left:50%;width:2px;background:#fff}
+.compare .lbl{position:absolute;top:8px;font:11px var(--f-mono);background:rgba(0,0,0,.6);padding:2px 7px;border-radius:4px}
+.compare input{position:absolute;inset:auto 0 8px;width:calc(100% - 20px);margin:0 10px}
+.prog{display:flex;flex-direction:column;gap:6px}
+.track{height:6px;background:#262b38;border-radius:3px;overflow:hidden}
+.fill{height:100%;width:0;background:var(--win-accent);transition:width .2s}
+.prog .row{display:flex;justify-content:space-between;font:12px var(--f-mono);color:var(--win-muted);font-variant-numeric:tabular-nums;gap:8px;flex-wrap:wrap}
+.panel{border-left:1px solid var(--win-line);padding:16px;display:flex;flex-direction:column;gap:14px;background:var(--win-panel)}
+.panel h4{margin:0;font:500 11px var(--f-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--win-muted)}
+.seg{display:grid;grid-template-columns:1fr 1fr;background:var(--win-bg);border-radius:8px;padding:3px;gap:3px}
+.seg button{all:unset;cursor:pointer;text-align:center;padding:7px;border-radius:6px;color:var(--win-muted);font-size:13px}
+.seg button.on{background:#262d45;color:var(--win-fg)}
+.seg button:focus-visible{outline:2px solid var(--win-accent)}
+.field{display:flex;flex-direction:column;gap:5px}
+.field label{font-size:12px;color:var(--win-muted)}
+.field select,.field input[type=range]{width:100%}
+.field select{background:var(--win-bg);color:var(--win-fg);border:1px solid var(--win-line);border-radius:6px;padding:7px 8px;font:13px var(--f-body)}
+.check{display:flex;gap:8px;align-items:center;font-size:13px}
+.hint{font-size:12px;color:var(--win-muted);line-height:1.45}
+.cmd{font:11px/1.5 var(--f-mono);background:var(--win-bg);border:1px solid var(--win-line);border-radius:6px;padding:8px;color:#b9c2da;word-break:break-all;max-height:120px;overflow:auto}
+.go{all:unset;cursor:pointer;text-align:center;background:var(--win-accent);color:#fff;font-weight:600;padding:11px;border-radius:8px}
+.go:hover{filter:brightness(1.1)}
+.go:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.queue{display:flex;flex-direction:column;gap:6px}
+.q{display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:7px 10px;background:var(--win-panel);border:1px solid var(--win-line);border-radius:7px}
+.q span:last-child{font:12px var(--f-mono);color:var(--win-muted)}
+@media (max-width:900px){.app{grid-template-columns:1fr}.side{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--win-line)}.panel{border-left:0;border-top:1px solid var(--win-line)}.specs{grid-template-columns:repeat(2,1fr)}}
+@media (prefers-reduced-motion:reduce){.fill{transition:none}}
+</style>
+
+<div class="wrap">
+
+<header style="display:flex;flex-direction:column;gap:14px">
+  <span class="eyebrow">Черновик v0.1 · 7 ноября 2026</span>
+  <h1>Clipforge: локальный оптимизатор видео под TikTok на RTX</h1>
+  <p class="lead">Десктоп-приложение, которое готовит ролик к загрузке так, чтобы TikTok пережимал его как можно мягче. Обработка идёт на видеокарте через NVENC, без облака и без очередей. «Clipforge» — рабочее имя, поменяем.</p>
+</header>
+
+<section>
+  <span class="eyebrow">Что мы копируем у референса</span>
+  <h2>Как устроен облачный сервис</h2>
+  <p>Сервис-пример обещает «загрузку до 4K 120 FPS» и пишет, что переписывает MP4-контейнер и метаданные без перекодирования кадров. Пайплайн у него простой: загрузил MP4/MOV → «Optimize» → скачал файл → залил в TikTok через веб с включённым «Upload HD», ничего не редактируя внутри TikTok.</p>
+  <div class="note"><strong>Важно.</strong> Сервис нигде не показывает, что именно он меняет в файле, и доказательств эффекта нет. Поэтому мы делаем оба режима: «Ремукс» (как у них, без перекодирования) и «NVENC» (честное перекодирование под рекомендованные параметры TikTok). Какой реально даёт лучший результат после загрузки, проверим A/B-тестом в фазе 4, а не будем верить маркетингу.</div>
+  <p class="lead" style="font-size:16px">Чего у нас не будет: раздачи «Premiere / After Effects / Topaz в комплекте» (это пиратство) и функций для обхода модерации или проверки дубликатов.</p>
+</section>
+
+<section>
+  <span class="eyebrow">Макет</span>
+  <h2>Главный экран</h2>
+  <p>Кликабельный набросок: переключите режим, подвигайте слайдер сравнения и нажмите «Оптимизировать», чтобы увидеть прогресс. Данные файла — пример.</p>
+
+  <div class="win" role="region" aria-label="Макет приложения">
+    <div class="titlebar">
+      <span class="name">Clipforge</span><span class="chip">v0.1.0</span>
+      <span class="sp"></span>
+      <span class="gpu"><span class="dot"></span>RTX 4070 · NVENC 8th gen · H.264 / HEVC / AV1 · драйвер 566.14</span>
+    </div>
+    <div class="app">
+      <nav class="side" aria-label="Разделы">
+        <button class="nav on">Оптимизатор</button>
+        <button class="nav">Очередь <span class="badge">3</span></button>
+        <button class="nav">Пресеты</button>
+        <button class="nav">Анализ файла</button>
+        <button class="nav">История</button>
+        <button class="nav">Настройки</button>
+      </nav>
+
+      <div class="main">
+        <div class="drop"><span style="font-size:20px">⇪</span><span><b>Перетащите видео сюда</b> или нажмите, чтобы выбрать · MP4 / MOV · H.264, HEVC, ProRes</span></div>
+
+        <div class="file">
+          <div class="file-h">
+            <strong>dance_take3_final.mov</strong>
+            <span style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip ok">moov в начале</span><span class="chip warn">нет цветовых тегов</span><span class="chip warn">10-bit → нужен 8-bit</span></span>
+          </div>
+          <div class="specs">
+            <div class="spec"><div class="k">Разрешение</div><div class="v">3840×2160</div></div>
+            <div class="spec"><div class="k">Кадры</div><div class="v">59.94 fps</div></div>
+            <div class="spec"><div class="k">Кодек</div><div class="v">HEVC Main10</div></div>
+            <div class="spec"><div class="k">Битрейт</div><div class="v">86.4 Мбит/с</div></div>
+            <div class="spec"><div class="k">Длительность</div><div class="v">00:00:24.7</div></div>
+            <div class="spec"><div class="k">Размер</div><div class="v">266 МБ</div></div>
+            <div class="spec"><div class="k">Аудио</div><div class="v">AAC 48 кГц</div></div>
+            <div class="spec"><div class="k">Цвет</div><div class="v">не указан</div></div>
+          </div>
+          <div class="compare" id="cmp">
+            <canvas id="cA" width="640" height="360"></canvas>
+            <div class="cut" id="cut"><canvas id="cB" width="640" height="360"></canvas></div>
+            <div class="bar" id="bar"></div>
+            <span class="lbl" style="left:8px">Исходник</span>
+            <span class="lbl" style="right:8px">После TikTok (прогноз)</span>
+            <input type="range" id="slider" min="0" max="100" value="50" aria-label="Сравнение до и после">
+          </div>
+          <div class="prog" id="prog" hidden>
+            <div class="track"><div class="fill" id="fill"></div></div>
+            <div class="row"><span id="pstate">NVENC · кодирование</span><span id="pstat">0% · 0 fps · 0.0×</span></div>
+          </div>
+        </div>
+
+        <div class="queue">
+          <div class="q"><span>gym_reel_02.mp4</span><span>ждёт · 1080p60</span></div>
+          <div class="q"><span>promo_vertical.mp4</span><span>готово · 41 МБ</span></div>
+        </div>
+      </div>
+
+      <aside class="panel" aria-label="Параметры">
+        <h4>Режим</h4>
+        <div class="seg" role="tablist">
+          <button id="mRemux" role="tab" aria-selected="false">Ремукс</button>
+          <button id="mNvenc" class="on" role="tab" aria-selected="true">NVENC</button>
+        </div>
+        <p class="hint" id="modeHint">Перекодирование на GPU в параметры, которые TikTok принимает без лишнего пережатия.</p>
+
+        <div id="nvOpts" style="display:flex;flex-direction:column;gap:12px">
+          <div class="field"><label for="preset">Пресет</label>
+            <select id="preset">
+              <option>TikTok 1080p60 · H.264</option>
+              <option>TikTok 4K60 · HEVC</option>
+              <option>TikTok 1080p30 · лёгкий</option>
+            </select></div>
+          <div class="field"><label for="br">Битрейт: <span id="brv" class="mono">25</span> Мбит/с</label>
+            <input type="range" id="br" min="10" max="40" value="25"></div>
+          <label class="check"><input type="checkbox" id="vsr"> Апскейл RTX Video Super Resolution</label>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <label class="check"><input type="checkbox" checked> faststart (moov в начало)</label>
+          <label class="check"><input type="checkbox" checked> Цветовые теги BT.709</label>
+          <label class="check"><input type="checkbox" checked> Очистить лишние метаданные</label>
+        </div>
+
+        <h4>Команда ffmpeg</h4>
+        <div class="cmd" id="cmd"></div>
+        <button class="go" id="go">Оптимизировать</button>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section>
+  <span class="eyebrow">Режимы обработки</span>
+  <h2>Что приложение делает с файлом</h2>
+  <div class="grid2">
+    <div class="box">
+      <h3>Ремукс (без перекодирования)</h3>
+      <p style="color:var(--muted)">Кадры не трогаем, работает за секунды даже без GPU.</p>
+      <ul>
+        <li>moov-атом в начало файла (<code>-movflags +faststart</code>)</li>
+        <li>Правильные цветовые теги: BT.709, limited range</li>
+        <li>Нормализация таймстемпов и fps-метаданных (VFR → CFR-флаги)</li>
+        <li>Удаление мусорных метаданных и лишних дорожек</li>
+        <li>Подходит, если исходник уже H.264/HEVC 8-bit</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>NVENC (перекодирование на RTX)</h3>
+      <p style="color:var(--muted)">Для исходников из монтажек: ProRes, 10-bit, огромный битрейт.</p>
+      <ul>
+        <li><code>h264_nvenc</code> / <code>hevc_nvenc</code>, preset p7, tune hq, 2-pass</li>
+        <li>VBR 10–40 Мбит/с, yuv420p 8-bit, GOP 2 с</li>
+        <li>Масштаб на GPU (<code>scale_cuda</code>), вертикаль 1080×1920</li>
+        <li>Аудио AAC 48 кГц 320 кбит/с</li>
+        <li>Опционально: апскейл RTX VSR (фаза 5)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <span class="eyebrow">Стек</span>
+  <h2>Технологии</h2>
+  <div class="tbl"><table>
+    <tr><th>Слой</th><th>Выбор</th><th>Почему</th></tr>
+    <tr><td>Оболочка</td><td>Tauri 2 (Rust)</td><td>Установщик ~10 МБ вместо ~150 у Electron, нативный доступ к процессам и файлам</td></tr>
+    <tr><td>Интерфейс</td><td>React + TypeScript + Vite</td><td>Быстро собирать экраны, легко найти разработчиков</td></tr>
+    <tr><td>Видео</td><td>ffmpeg / ffprobe (сборка с NVENC и CUDA) как sidecar</td><td>Готовая поддержка NVENC, scale_cuda, ремукса; прогресс читаем из <code>-progress pipe:1</code></td></tr>
+    <tr><td>GPU</td><td>NVML через crate <code>nvml-wrapper</code></td><td>Модель карты, драйвер, загрузка энкодера, число NVENC-сессий</td></tr>
+    <tr><td>Апскейл</td><td>NVIDIA Video Effects SDK / RTX VSR</td><td>Только RTX, подключаем позже как отдельный модуль</td></tr>
+    <tr><td>Сборка</td><td>GitHub Actions → MSI/NSIS для Windows</td><td>Каждый тег <code>v*</code> собирает релиз с установщиком</td></tr>
+  </table></div>
+  <p style="color:var(--muted)">Требования: Windows 10/11 x64, GeForce RTX 20xx и новее, драйвер 551+. Без RTX приложение работает в режиме «Ремукс» и предлагает CPU-кодирование (libx264) как запасной путь.</p>
+</section>
+
+<section>
+  <span class="eyebrow">Репозиторий</span>
+  <h2>Структура проекта</h2>
+<pre class="tree">clipforge/
+├─ src/                    # React UI
+│  ├─ screens/             # Optimizer, Queue, Presets, Analyze, History, Settings
+│  ├─ components/          # DropZone, FileCard, CompareSlider, ProgressBar
+│  └─ lib/ipc.ts           # вызовы Tauri-команд
+├─ src-tauri/
+│  ├─ src/
+│  │  ├─ gpu.rs            # NVML: модель, драйвер, NVENC-возможности
+│  │  ├─ probe.rs          # ffprobe → JSON → отчёт «здоровья» файла
+│  │  ├─ pipeline.rs       # сборка аргументов ffmpeg из пресета
+│  │  ├─ job.rs            # очередь, запуск, прогресс, отмена
+│  │  └─ presets.rs        # встроенные + пользовательские пресеты (TOML)
+│  └─ binaries/            # ffmpeg/ffprobe (скачиваются скриптом, не в git)
+├─ presets/                # tiktok-1080p60.toml, tiktok-4k60-hevc.toml …
+├─ scripts/fetch-ffmpeg.ps1
+├─ docs/ab-tests.md        # результаты загрузок в TikTok
+└─ .github/workflows/      # ci.yml, release.yml</pre>
+</section>
+
+<section>
+  <span class="eyebrow">Этапы</span>
+  <h2>План работ</h2>
+  <div class="phases">
+    <div class="phase"><span class="tag">Фаза 0</span><div><h3>Каркас репозитория</h3><ul><li>Tauri 2 + React шаблон, линтеры, README</li><li>Скрипт загрузки ffmpeg с NVENC, проверка хэша</li><li>CI: сборка и тесты на каждый PR</li></ul></div></div>
+    <div class="phase"><span class="tag">Фаза 1</span><div><h3>Анализ и ремукс</h3><ul><li>Определение GPU через NVML, плашка в заголовке</li><li>ffprobe → карточка файла с предупреждениями</li><li>Режим «Ремукс» целиком, сохранение рядом с исходником</li></ul></div></div>
+    <div class="phase"><span class="tag">Фаза 2</span><div><h3>NVENC-пайплайн</h3><ul><li>Пресеты в TOML, генератор команд ffmpeg</li><li>Прогресс, fps, скорость, отмена задачи</li><li>Очередь из нескольких файлов, лимит параллельных NVENC-сессий</li></ul></div></div>
+    <div class="phase"><span class="tag">Фаза 3</span><div><h3>Интерфейс как в макете</h3><ul><li>Drag-and-drop, слайдер «до/после» по реальным кадрам</li><li>История, редактор пресетов, настройки папок</li><li>Русский и английский язык</li></ul></div></div>
+    <div class="phase"><span class="tag">Фаза 4</span><div><h3>A/B-тест на реальных загрузках</h3><ul><li>Один ролик в 4 вариантах: исходник, ремукс, NVENC H.264, NVENC HEVC</li><li>Скачиваем то, что отдаёт TikTok, сравниваем битрейт, разрешение и VMAF</li><li>По итогам выбираем пресеты по умолчанию</li></ul></div></div>
+    <div class="phase"><span class="tag">Фаза 5</span><div><h3>Релиз и расширения</h3><ul><li>Установщик, автообновление через GitHub Releases</li><li>RTX Video Super Resolution для апскейла 720p → 1080p/4K</li><li>Подписание бинарника, чтобы Windows не ругался</li></ul></div></div>
+  </div>
+</section>
+
+<section>
+  <span class="eyebrow">Нужно от вас</span>
+  <h2>Открытые вопросы</h2>
+  <div class="grid2">
+    <div class="box"><h3>Репозиторий</h3><p style="color:var(--muted)">Ссылка на GitHub-репозиторий и путь к локальной копии, если она уже склонирована.</p></div>
+    <div class="box"><h3>Платформы</h3><p style="color:var(--muted)">Только Windows или нужен ещё Linux? NVENC на macOS нет.</p></div>
+    <div class="box"><h3>Стек</h3><p style="color:var(--muted)">Устраивает Tauri + React, или удобнее Python (PySide6), если команда пишет на нём?</p></div>
+    <div class="box"><h3>Название и лицензия</h3><p style="color:var(--muted)">Имя продукта и лицензия кода. От лицензии зависит, какую сборку ffmpeg можно поставлять.</p></div>
+  </div>
+</section>
+
+</div>
+
+<script>
+(function(){
+  // Рисуем «кадр»: градиентная сцена с фигурой; правая половина — блочная пережатая версия
+  function scene(ctx,blocky){
+    const w=640,h=360,g=ctx.createLinearGradient(0,0,w,h);
+    g.addColorStop(0,'#1d2b64');g.addColorStop(.55,'#b04a8a');g.addColorStop(1,'#f8b26a');
+    ctx.fillStyle=g;ctx.fillRect(0,0,w,h);
+    for(let i=0;i<60;i++){ctx.fillStyle='rgba(255,255,255,'+(0.04+(i%7)*0.012)+')';ctx.beginPath();ctx.arc((i*97)%w,(i*53)%h,2+(i%5)*3,0,7);ctx.fill();}
+    ctx.fillStyle='#0d0f18';ctx.beginPath();ctx.arc(320,140,38,0,7);ctx.fill();
+    ctx.fillRect(292,180,56,120);ctx.fillRect(250,190,42,14);ctx.fillRect(348,170,50,14);
+    ctx.font='600 22px Onest, sans-serif';ctx.fillStyle='#fff';ctx.fillText('@creator · 4K 60fps',24,336);
+    if(blocky){const s=12,d=ctx.getImageData(0,0,w,h);ctx.imageSmoothingEnabled=false;
+      const tmp=document.createElement('canvas');tmp.width=w/s;tmp.height=h/s;const t=tmp.getContext('2d');
+      t.drawImage(ctx.canvas,0,0,w/s,h/s);ctx.drawImage(tmp,0,0,w,h);}
+  }
+  scene(document.getElementById('cB').getContext('2d'),false);
+  scene(document.getElementById('cA').getContext('2d'),true);
+  // Левая сторона (cut) — исходник, правая — пережатый
+  const sl=document.getElementById('slider'),cut=document.getElementById('cut'),bar=document.getElementById('bar');
+  function upd(){const v=sl.value;cut.style.clipPath='inset(0 '+(100-v)+'% 0 0)';bar.style.left=v+'%';}
+  sl.addEventListener('input',upd);upd();
+
+  const mR=document.getElementById('mRemux'),mN=document.getElementById('mNvenc'),opts=document.getElementById('nvOpts'),hint=document.getElementById('modeHint');
+  const br=document.getElementById('br'),brv=document.getElementById('brv'),preset=document.getElementById('preset'),vsr=document.getElementById('vsr'),cmd=document.getElementById('cmd');
+  let mode='nvenc';
+  function build(){
+    if(mode==='remux'){cmd.textContent='ffmpeg -i dance_take3_final.mov -map 0:v:0 -map 0:a:0 -c copy -map_metadata -1 -color_primaries bt709 -color_trc bt709 -colorspace bt709 -movflags +faststart out.mp4';return;}
+    const hevc=preset.selectedIndex===1,res=hevc?'2160:3840':'1080:1920',fps=preset.selectedIndex===2?30:60;
+    cmd.textContent='ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i dance_take3_final.mov -vf "scale_cuda='+res+':format=yuv420p'+(vsr.checked?',vsr':'')+'" -r '+fps+' -c:v '+(hevc?'hevc':'h264')+'_nvenc -preset p7 -tune hq -multipass fullres -rc vbr -b:v '+br.value+'M -maxrate '+Math.round(br.value*1.5)+'M -g '+fps*2+' -c:a aac -b:a 320k -ar 48000 -map_metadata -1 -movflags +faststart out.mp4';
+  }
+  function setMode(m){mode=m;mR.classList.toggle('on',m==='remux');mN.classList.toggle('on',m==='nvenc');
+    mR.setAttribute('aria-selected',m==='remux');mN.setAttribute('aria-selected',m==='nvenc');
+    opts.hidden=m==='remux';
+    hint.textContent=m==='remux'?'Кадры не перекодируются: меняем только контейнер и метаданные. Занимает пару секунд.':'Перекодирование на GPU в параметры, которые TikTok принимает без лишнего пережатия.';build();}
+  mR.onclick=()=>setMode('remux');mN.onclick=()=>setMode('nvenc');
+  br.oninput=()=>{brv.textContent=br.value;build();};preset.onchange=build;vsr.onchange=build;build();
+
+  const go=document.getElementById('go'),prog=document.getElementById('prog'),fill=document.getElementById('fill'),pstat=document.getElementById('pstat'),pstate=document.getElementById('pstate');
+  let timer=null;
+  go.onclick=()=>{
+    if(timer){clearInterval(timer);timer=null;go.textContent='Оптимизировать';prog.hidden=true;return;}
+    prog.hidden=false;go.textContent='Отмена';let p=0;
+    const step=mode==='remux'?25:3;pstate.textContent=mode==='remux'?'Ремукс · копирование потоков':'NVENC · кодирование';
+    timer=setInterval(()=>{p=Math.min(100,p+step);fill.style.width=p+'%';
+      const fps=mode==='remux'?0:(212+Math.round(Math.random()*20));
+      pstat.textContent=p+'% · '+(mode==='remux'?'—':fps+' fps · '+(fps/60).toFixed(1)+'×');
+      if(p>=100){clearInterval(timer);timer=null;pstate.textContent='Готово · out.mp4 · '+(mode==='remux'?'264':Math.round(br.value*24.7/8))+' МБ';go.textContent='Оптимизировать';}
+    },150);
+  };
+})();
+</script>
