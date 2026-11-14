@@ -230,6 +230,64 @@ fn run_stage(
     }
 }
 
+/// Runs RIFE to completion. With `-v` it prints one "... done" line per finished frame,
+/// which is the only progress signal it gives.
+#[allow(clippy::too_many_arguments)]
+fn run_rife(
+    app: &AppHandle,
+    jobs: &Jobs,
+    job_id: u64,
+    exe: &Path,
+    args: &[String],
+    frames_out: u64,
+    from: f64,
+    to: f64,
+) -> Result<(), StageError> {
+    if jobs.is_cancelled(job_id) {
+        return Err(StageError::Cancelled);
+    }
+    let mut child = tools::command(exe)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| StageError::Failed(format!("Не удалось запустить RIFE: {e}")))?;
+    let stderr = child.stderr.take().expect("piped stderr");
+    jobs.children.lock().unwrap().insert(job_id, child);
+
+    let stage = "Достройка кадров (RIFE)";
+    let mut done = 0u64;
+    let mut tail: Vec<String> = Vec::new();
+    let mut last_emit = std::time::Instant::now();
+    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        if line.trim_end().ends_with("done") {
+            done += 1;
+            if last_emit.elapsed().as_millis() >= 250 {
+                last_emit = std::time::Instant::now();
+                let part = (done as f64 / frames_out.max(1) as f64).clamp(0.0, 1.0);
+                let _ = app.emit("job-progress", Progress { job_id, percent: from + (to - from) * part, speed: None, stage });
+            }
+        } else if !line.starts_with('[') {
+            tail.push(line);
+            if tail.len() > 5 {
+                tail.remove(0);
+            }
+        }
+    }
+
+    let status = jobs.children.lock().unwrap().remove(&job_id).map(|mut c| c.wait());
+    match status {
+        Some(Ok(s)) if s.success() && done > 0 => Ok(()),
+        _ if jobs.is_cancelled(job_id) => Err(StageError::Cancelled),
+        _ => Err(StageError::Failed(format!("RIFE завершился с ошибкой: {}", tail.join(" | ")))),
+    }
+}
+
+/// Temporary folder for PNG frames of the RIFE stage, next to the output file.
+pub fn frames_dir(output: &Path) -> PathBuf {
+    output.with_extension("frames")
+}
+
 /// `clip_tiktok.mp4` → `clip_tiktok.stage1.mp4` (intermediate file of the enhance stage).
 pub fn stage1_path(output: &Path) -> PathBuf {
     output.with_extension("stage1.mp4")
@@ -254,10 +312,45 @@ pub fn start(
 
     std::thread::spawn(move || {
         let stage1 = stage1_path(&output);
+        let frames = frames_dir(&output);
         let result = (|| -> Result<(), StageError> {
             let mut source = report.clone();
             let mut remux_from = 0.0;
-            if enh.enabled {
+            if enhance::uses_rife(&report, &enh) {
+                let (rife_exe, model) = tools::rife().ok_or_else(|| {
+                    StageError::Failed("RIFE не найден: положите rife-ncnn-vulkan в папку rife рядом с приложением.".into())
+                })?;
+                let io = |e: std::io::Error| StageError::Failed(format!("Не удалось создать временную папку: {e}"));
+                let (dir_in, dir_out) = (frames.join("in"), frames.join("out"));
+                let _ = std::fs::remove_dir_all(&frames);
+                std::fs::create_dir_all(&dir_in).map_err(io)?;
+                std::fs::create_dir_all(&dir_out).map_err(io)?;
+
+                let args = enhance::extract_frames_args(&report, &dir_in);
+                run_stage(&app, &jobs, job_id, "Извлечение кадров", &args, report.duration_s, 0.0, 15.0)?;
+                let frames_in = std::fs::read_dir(&dir_in).map(|d| d.count() as u64).unwrap_or(0);
+                if frames_in < 2 {
+                    return Err(StageError::Failed("Не удалось извлечь кадры из видео.".into()));
+                }
+                let sfps = report.video.as_ref().map(|v| v.fps).unwrap_or(30.0);
+                let frames_out = enhance::rife_frame_count(frames_in, sfps, enh.fps_target);
+                let gpu = tools::rife_gpu_index(&rife_exe);
+                let args = enhance::rife_args(&dir_in, &dir_out, frames_out, &model, gpu);
+                run_rife(&app, &jobs, job_id, &rife_exe, &args, frames_out, 15.0, 65.0)?;
+                let _ = std::fs::remove_dir_all(&dir_in);
+
+                // Keep the clip length exact: frame rate = produced frames / source duration.
+                let fps = if report.duration_s > 0.0 && sfps > 0.0 {
+                    frames_out as f64 / (frames_in as f64 / sfps)
+                } else {
+                    enhance::fps_goal(enh.fps_target) as f64
+                };
+                let args = enhance::build_args_from_frames(&report, &dir_out, fps, &stage1, &enh);
+                run_stage(&app, &jobs, job_id, "Улучшение и кодирование", &args, report.duration_s, 65.0, 95.0)?;
+                let _ = std::fs::remove_dir_all(&frames);
+                source = crate::probe::probe(&stage1.to_string_lossy()).map_err(StageError::Failed)?;
+                remux_from = 95.0;
+            } else if enh.enabled {
                 let args = enhance::build_args(&report, &stage1, &enh);
                 run_stage(&app, &jobs, job_id, "Улучшение и кодирование", &args, report.duration_s, 0.0, 95.0)?;
                 source = crate::probe::probe(&stage1.to_string_lossy()).map_err(StageError::Failed)?;
@@ -273,6 +366,7 @@ pub fn start(
         })();
 
         let _ = std::fs::remove_file(&stage1);
+        let _ = std::fs::remove_dir_all(&frames);
         jobs.cancelled.lock().unwrap().remove(&job_id);
         match result {
             Ok(()) => {

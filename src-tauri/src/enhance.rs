@@ -32,6 +32,9 @@ pub enum FpsMode {
     Blend,
     /// Target rate by motion interpolation (CPU, slow, can produce artifacts)
     Motion,
+    /// Target rate by the RIFE neural network (GPU; needs the optional rife-ncnn-vulkan
+    /// tool and temporary disk space for every frame as PNG)
+    Rife,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -141,20 +144,82 @@ pub fn filter_chain(report: &ProbeReport, o: &EnhanceOptions) -> String {
     chain.join(",")
 }
 
+/// True when this job goes through RIFE (the source is below the frame-rate goal).
+pub fn uses_rife(report: &ProbeReport, o: &EnhanceOptions) -> bool {
+    let sfps = report.video.as_ref().map(|v| v.fps).unwrap_or(0.0);
+    o.enabled && o.fps == FpsMode::Rife && sfps > 0.0 && sfps < fps_goal(o.fps_target) as f64 - 1.0
+}
+
+/// How many frames RIFE must produce from `frames_in` source frames.
+pub fn rife_frame_count(frames_in: u64, source_fps: f64, target: u32) -> u64 {
+    if source_fps <= 0.0 {
+        return frames_in;
+    }
+    ((frames_in as f64) * fps_goal(target) as f64 / source_fps).round() as u64
+}
+
+/// ffmpeg arguments that dump every video frame as PNG into `frames_dir`.
+pub fn extract_frames_args(report: &ProbeReport, frames_dir: &Path) -> Vec<String> {
+    let s = |x: &str| x.to_string();
+    vec![
+        s("-hide_banner"), s("-nostdin"), s("-y"), s("-v"), s("error"),
+        s("-i"), report.path.clone(),
+        s("-map"), s("0:v:0"), s("-fps_mode"), s("passthrough"),
+        s("-pix_fmt"), s("rgb24"), s("-compression_level"), s("1"),
+        s("-progress"), s("pipe:1"), s("-nostats"),
+        frames_dir.join("%08d.png").to_string_lossy().into_owned(),
+    ]
+}
+
+/// rife-ncnn-vulkan arguments: `frames_out` frames from the PNGs in `input_dir`.
+pub fn rife_args(input_dir: &Path, output_dir: &Path, frames_out: u64, model_dir: &Path, gpu: u32) -> Vec<String> {
+    let s = |x: &str| x.to_string();
+    let p = |x: &Path| x.to_string_lossy().into_owned();
+    vec![
+        s("-v"),
+        s("-i"), p(input_dir), s("-o"), p(output_dir),
+        s("-n"), frames_out.to_string(),
+        s("-m"), p(model_dir),
+        s("-g"), gpu.to_string(),
+        s("-j"), s("2:4:4"),
+        s("-f"), s("%08d.png"),
+    ]
+}
+
 /// ffmpeg arguments for the enhancement + NVENC stage.
 pub fn build_args(report: &ProbeReport, output: &Path, o: &EnhanceOptions) -> Vec<String> {
+    build_args_with(report, output, o, None)
+}
+
+/// Like `build_args`, but the video comes from numbered PNG frames at `fps`
+/// (the RIFE output); the audio still comes from the source file.
+pub fn build_args_from_frames(report: &ProbeReport, frames_dir: &Path, fps: f64, output: &Path, o: &EnhanceOptions) -> Vec<String> {
+    build_args_with(report, output, o, Some((frames_dir, fps)))
+}
+
+fn build_args_with(report: &ProbeReport, output: &Path, o: &EnhanceOptions, frames: Option<(&Path, f64)>) -> Vec<String> {
     let s = |x: &str| x.to_string();
-    let fps = target_fps(report.video.as_ref().map(|v| v.fps).unwrap_or(30.0), o.fps, o.fps_target);
+    let fps = match frames {
+        Some((_, f)) => f,
+        None => target_fps(report.video.as_ref().map(|v| v.fps).unwrap_or(30.0), o.fps, o.fps_target),
+    };
     let gop = ((fps * 2.0).round() as u32).clamp(24, 480);
     let mbps = o.bitrate_mbps.clamp(2, 100);
 
     let mut a = vec![
         s("-hide_banner"), s("-nostdin"), s("-y"), s("-v"), s("error"),
         s("-init_hw_device"), s("vulkan"),
-        s("-i"), report.path.clone(),
-        s("-map"), s("0:v:0"), s("-map"), s("0:a:0?"),
-        s("-vf"), filter_chain(report, o),
     ];
+    match frames {
+        Some((dir, f)) => a.extend([
+            s("-framerate"), format!("{f}"),
+            s("-i"), dir.join("%08d.png").to_string_lossy().into_owned(),
+            s("-i"), report.path.clone(),
+            s("-map"), s("0:v:0"), s("-map"), s("1:a:0?"),
+        ]),
+        None => a.extend([s("-i"), report.path.clone(), s("-map"), s("0:v:0"), s("-map"), s("0:a:0?")]),
+    }
+    a.extend([s("-vf"), filter_chain(report, o)]);
     let (encoder, profile) = match o.codec {
         Codec::H264 => ("h264_nvenc", "high"),
         Codec::Hevc => ("hevc_nvenc", "main"),

@@ -9,6 +9,7 @@ import {
   fmtBytes,
   fmtDuration,
   gpuInfo,
+  rifeAvailable,
   onJobEvents,
   probeFile,
   startRemux,
@@ -73,6 +74,7 @@ const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
 export default function App() {
   const [gpu, setGpu] = useState<GpuInfo | null>(null);
+  const [rife, setRife] = useState(false);
   const [items, setItems] = useState<Item[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +105,7 @@ export default function App() {
     setEnh((prev) => ({ ...prev, [key]: value }));
 
   useEffect(() => {
+    rifeAvailable().then(setRife).catch(() => setRife(false));
     gpuInfo().then(setGpu).catch(() => setGpu({ name: null, driver: null, memoryMb: null, isRtx: false, nvenc: [], note: "Не удалось определить видеокарту." }));
   }, []);
 
@@ -261,6 +264,10 @@ export default function App() {
   const waiting = items.filter((it) => it.status === "ready" || it.status === "cancelled").length;
   const finished = items.filter((it) => it.status === "done").length;
   const outSize = report?.video ? targetSize(report.video.width, report.video.height, enh.shortSide) : null;
+  // PNG frames take roughly 0.6 bytes per pixel: source frames plus generated ones.
+  const rifeDiskGb = report?.video && report.video.fps > 0
+    ? Math.max(1, Math.ceil((report.video.width * report.video.height * 0.65 * report.durationS * (report.video.fps + Math.max(report.video.fps, enh.fpsTarget))) / 1e9))
+    : 0;
   const outFps = report?.video ? (enh.fps === "keep" ? report.video.fps : Math.max(report.video.fps, enh.fpsTarget)) : 0;
 
   return (
@@ -443,9 +450,16 @@ export default function App() {
                   <label htmlFor="fpsMode">Как достраивать кадры</label>
                   <select id="fpsMode" value={enh.fps} onChange={(e) => setEnhField("fps", e.target.value as EnhanceOptions["fps"])} disabled={running}>
                     <option value="blend">Смешивание соседних кадров (быстро)</option>
+                    <option value="rife" disabled={!rife}>Нейросеть RIFE (лучшее качество){rife ? "" : " — не установлена"}</option>
                     <option value="motion">По движению (медленно, возможны артефакты)</option>
                   </select>
                 </div>
+              )}
+              {enh.fps === "rife" && (
+                <p className="hint warn">
+                  RIFE временно сохраняет каждый кадр на диск рядом с роликом
+                  {rifeDiskGb ? `: для этого файла нужно около ${rifeDiskGb} ГБ свободного места` : ""}. После обработки кадры удаляются.
+                </p>
               )}
               <div className="field">
                 <label htmlFor="denoise">Шумоподавление: {LEVELS[enh.denoise]}</label>
