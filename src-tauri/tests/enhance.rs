@@ -10,9 +10,10 @@ fn target_size_keeps_aspect_and_even_dimensions() {
     assert_eq!(enhance::target_size(1920, 1080, 2160), (3840, 2160));
     assert_eq!(enhance::target_size(1080, 1440, 0), (1080, 1440));
     assert_eq!(enhance::target_size(853, 480, 1080), (1920, 1080));
-    assert_eq!(enhance::target_fps(30.0, FpsMode::Blend), 60.0);
-    assert_eq!(enhance::target_fps(120.0, FpsMode::Motion), 120.0);
-    assert_eq!(enhance::target_fps(30.0, FpsMode::Keep), 30.0);
+    assert_eq!(enhance::target_fps(30.0, FpsMode::Blend, 60), 60.0);
+    assert_eq!(enhance::target_fps(120.0, FpsMode::Motion, 60), 120.0);
+    assert_eq!(enhance::target_fps(30.0, FpsMode::Keep, 120), 30.0);
+    assert_eq!(enhance::target_fps(60.0, FpsMode::Blend, 120), 120.0);
 }
 
 fn sample_report() -> probe::ProbeReport {
@@ -125,4 +126,17 @@ fn enhance_then_patch_end_to_end() {
     }
 
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn frame_rate_goal_of_120() {
+    let r = sample_report();
+    let o: EnhanceOptions = serde_json::from_str(r#"{"enabled":true,"fps":"blend","fpsTarget":120}"#).unwrap();
+    assert!(enhance::filter_chain(&r, &o).contains(":fps=120:frame_mixer="));
+    let o: EnhanceOptions = serde_json::from_str(r#"{"enabled":true,"fps":"motion","fpsTarget":120}"#).unwrap();
+    assert!(enhance::filter_chain(&r, &o).contains("minterpolate=fps=120:"));
+    // GOP stays two seconds long.
+    let args = enhance::build_args(&r, std::path::Path::new("C:/v/out.mp4"), &o);
+    let g = args.iter().position(|a| a == "-g").unwrap();
+    assert_eq!(args[g + 1], "240");
 }

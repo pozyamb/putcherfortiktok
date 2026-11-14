@@ -149,7 +149,7 @@ export default function App() {
   const running = job.state === "running";
   const canEncode = !!gpu && gpu.nvenc.includes("h264");
   const outSize = report?.video ? targetSize(report.video.width, report.video.height, enh.shortSide) : null;
-  const outFps = report?.video ? (enh.fps === "keep" ? report.video.fps : Math.max(report.video.fps, 60)) : 0;
+  const outFps = report?.video ? (enh.fps === "keep" ? report.video.fps : Math.max(report.video.fps, enh.fpsTarget)) : 0;
 
   return (
     <div className="shell">
@@ -257,12 +257,31 @@ export default function App() {
               </div>
               <div className="field">
                 <label htmlFor="fps">Частота кадров</label>
-                <select id="fps" value={enh.fps} onChange={(e) => setEnhField("fps", e.target.value as EnhanceOptions["fps"])} disabled={running}>
+                <select
+                  id="fps"
+                  value={enh.fps === "keep" ? "keep" : String(enh.fpsTarget)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setEnh((prev) => v === "keep"
+                      ? { ...prev, fps: "keep" }
+                      : { ...prev, fps: prev.fps === "keep" ? "blend" : prev.fps, fpsTarget: Number(v) });
+                  }}
+                  disabled={running}
+                >
                   <option value="keep">Как в исходнике</option>
-                  <option value="blend">60 fps, смешивание кадров (быстро)</option>
-                  <option value="motion">60 fps, по движению (медленно)</option>
+                  <option value="60">60 fps</option>
+                  <option value="120">120 fps</option>
                 </select>
               </div>
+              {enh.fps !== "keep" && (
+                <div className="field">
+                  <label htmlFor="fpsMode">Как достраивать кадры</label>
+                  <select id="fpsMode" value={enh.fps} onChange={(e) => setEnhField("fps", e.target.value as EnhanceOptions["fps"])} disabled={running}>
+                    <option value="blend">Смешивание соседних кадров (быстро)</option>
+                    <option value="motion">По движению (медленно, возможны артефакты)</option>
+                  </select>
+                </div>
+              )}
               <div className="field">
                 <label htmlFor="denoise">Шумоподавление: {LEVELS[enh.denoise]}</label>
                 <input id="denoise" type="range" min={0} max={3} step={1} value={enh.denoise} onChange={(e) => setEnhField("denoise", Number(e.target.value))} disabled={running} />

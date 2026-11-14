@@ -28,9 +28,9 @@ pub enum Upscaler {
 pub enum FpsMode {
     #[default]
     Keep,
-    /// 60 fps by blending neighbouring frames (GPU, fast)
+    /// Target rate by blending neighbouring frames (GPU, fast)
     Blend,
-    /// 60 fps by motion interpolation (CPU, slow, can produce artifacts)
+    /// Target rate by motion interpolation (CPU, slow, can produce artifacts)
     Motion,
 }
 
@@ -55,6 +55,8 @@ pub struct EnhanceOptions {
     pub sharpen: u8,
     pub deband: bool,
     pub fps: FpsMode,
+    /// Frame rate to reach when `fps` is not `Keep`: 60 or 120.
+    pub fps_target: u32,
     pub codec: Codec,
     pub bitrate_mbps: u32,
 }
@@ -69,6 +71,7 @@ impl Default for EnhanceOptions {
             sharpen: 0,
             deband: false,
             fps: FpsMode::Keep,
+            fps_target: 60,
             codec: Codec::H264,
             bitrate_mbps: 20,
         }
@@ -86,11 +89,11 @@ pub fn target_size(width: u32, height: u32, short_side: u32) -> (u32, u32) {
 }
 
 /// Frame rate of the encoded stream.
-pub fn target_fps(source_fps: f64, mode: FpsMode) -> f64 {
+pub fn target_fps(source_fps: f64, mode: FpsMode, target: u32) -> f64 {
     match mode {
         FpsMode::Keep => source_fps,
         // Never lower the rate: a 120 fps source stays as it is.
-        _ => source_fps.max(60.0),
+        _ => source_fps.max(fps_goal(target) as f64),
     }
 }
 
@@ -98,7 +101,8 @@ pub fn filter_chain(report: &ProbeReport, o: &EnhanceOptions) -> String {
     let v = report.video.as_ref();
     let (sw, sh, sfps) = v.map(|v| (v.width, v.height, v.fps)).unwrap_or((0, 0, 0.0));
     let (w, h) = target_size(sw, sh, o.short_side);
-    let raise_fps = o.fps != FpsMode::Keep && sfps > 0.0 && sfps < 59.0;
+    let goal = fps_goal(o.fps_target);
+    let raise_fps = o.fps != FpsMode::Keep && sfps > 0.0 && sfps < goal as f64 - 1.0;
     let mut chain: Vec<String> = Vec::new();
 
     match o.denoise.min(3) {
@@ -109,7 +113,7 @@ pub fn filter_chain(report: &ProbeReport, o: &EnhanceOptions) -> String {
     }
     if raise_fps && o.fps == FpsMode::Motion {
         // Interpolate at the source size, before upscaling: far fewer pixels to estimate motion on.
-        chain.push("minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:vsbmc=1".into());
+        chain.push(format!("minterpolate=fps={goal}:mi_mode=mci:mc_mode=aobmc:vsbmc=1"));
     }
 
     let upscaler = match o.upscaler {
@@ -122,7 +126,7 @@ pub fn filter_chain(report: &ProbeReport, o: &EnhanceOptions) -> String {
         placebo.push_str(":deband=true");
     }
     if raise_fps && o.fps == FpsMode::Blend {
-        placebo.push_str(":fps=60:frame_mixer=mitchell_clamp");
+        placebo.push_str(&format!(":fps={goal}:frame_mixer=mitchell_clamp"));
     }
     // Always deliver 8-bit BT.709 limited range; HDR sources get tone-mapped here.
     placebo.push_str(":format=yuv420p:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv");
@@ -140,7 +144,7 @@ pub fn filter_chain(report: &ProbeReport, o: &EnhanceOptions) -> String {
 /// ffmpeg arguments for the enhancement + NVENC stage.
 pub fn build_args(report: &ProbeReport, output: &Path, o: &EnhanceOptions) -> Vec<String> {
     let s = |x: &str| x.to_string();
-    let fps = target_fps(report.video.as_ref().map(|v| v.fps).unwrap_or(30.0), o.fps);
+    let fps = target_fps(report.video.as_ref().map(|v| v.fps).unwrap_or(30.0), o.fps, o.fps_target);
     let gop = ((fps * 2.0).round() as u32).clamp(24, 480);
     let mbps = o.bitrate_mbps.clamp(2, 100);
 
@@ -178,4 +182,13 @@ pub fn build_args(report: &ProbeReport, output: &Path, o: &EnhanceOptions) -> Ve
     a.extend([s("-movflags"), s("+faststart"), s("-progress"), s("pipe:1"), s("-nostats")]);
     a.push(output.to_string_lossy().into_owned());
     a
+}
+
+/// Supported frame-rate goals: 120, otherwise 60.
+pub fn fps_goal(target: u32) -> u32 {
+    if target >= 120 {
+        120
+    } else {
+        60
+    }
 }

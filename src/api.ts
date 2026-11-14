@@ -96,6 +96,8 @@ export interface EnhanceOptions {
   sharpen: number;
   deband: boolean;
   fps: "keep" | "blend" | "motion";
+  /** Frame rate to reach when fps is not "keep": 60 or 120. */
+  fpsTarget: number;
   codec: "h264" | "hevc";
   bitrateMbps: number;
 }
@@ -107,6 +109,7 @@ export const DEFAULT_ENHANCE: EnhanceOptions = {
   sharpen: 0,
   deband: false,
   fps: "keep",
+  fpsTarget: 60,
   codec: "h264",
   bitrateMbps: 20,
 };
