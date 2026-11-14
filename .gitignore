@@ -25,3 +25,6 @@ dist-ssr
 
 # ffmpeg sidecar binaries (downloaded by script)
 src-tauri/binaries/
+
+# Vite cache
+.vite/
