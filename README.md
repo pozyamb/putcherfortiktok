@@ -61,3 +61,11 @@ npm run dev
 3. Интерфейс как в макете
 4. A/B-тест на реальных загрузках в TikTok
 5. Один portable exe с вшитым ffmpeg (без автообновления и сети), апскейл RTX VSR
+
+## Сборка установщика
+
+```bash
+npm run installer
+```
+
+Получается один файл `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/putcherfortiktok_<версия>_x64-setup.exe`. Внутри программа, ffmpeg, ffprobe, RIFE и автономный установщик WebView2, так что интернет при установке не нужен. Перед сборкой должны лежать на месте `src-tauri/binaries/ffmpeg-*.exe`, `ffprobe-*.exe` и папка `binaries/rife`. Портативный zip без установки собирает `scripts/package-portable.ps1`.
