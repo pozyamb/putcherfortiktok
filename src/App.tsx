@@ -9,20 +9,30 @@ import {
   fmtBytes,
   fmtDuration,
   gpuInfo,
+  rifeAvailable,
   onJobEvents,
   probeFile,
   startRemux,
-  DEFAULT_ENHANCE,
   type EnhanceOptions,
   type GpuInfo,
   type ProbeReport,
   type RatePatch,
 } from "./api";
+import {
+  BUILTIN_PRESETS,
+  DEFAULT_SETTINGS,
+  loadUserPresets,
+  sameSettings,
+  saveUserPresets,
+  toRemuxOptions,
+  type Method,
+  type Preset,
+  type Settings,
+} from "./presets";
 import "./App.css";
 
-type Method = "tail" | "retime" | "plain";
-
 const LEVELS = ["выкл", "слабо", "средне", "сильно"];
+const VIDEO_EXT = ["mp4", "mov", "m4v", "mkv", "webm", "avi"];
 
 /** Mirrors `enhance::target_size` in Rust: short side → target, aspect kept, even numbers. */
 function targetSize(w: number, h: number, shortSide: number): [number, number] {
@@ -32,54 +42,100 @@ function targetSize(w: number, h: number, shortSide: number): [number, number] {
   return [even(w * k), even(h * k)];
 }
 
-const VIDEO_EXT =["mp4", "mov", "m4v", "mkv", "webm", "avi"];
+type Status = "probing" | "ready" | "running" | "done" | "failed" | "cancelled";
 
-type Job =
-  | { state: "idle" }
-  | { state: "running"; jobId: number; percent: number; speed: number | null; stage: string }
-  | { state: "done"; output: string; sizeBytes: number; report: ProbeReport | null }
-  | { state: "failed"; message: string; cancelled: boolean };
+interface Item {
+  id: number;
+  path: string;
+  name: string;
+  status: Status;
+  report: ProbeReport | null;
+  jobId: number | null;
+  percent: number;
+  speed: number | null;
+  stage: string;
+  output: string | null;
+  sizeBytes: number;
+  outReport: ProbeReport | null;
+  message: string | null;
+}
 
-const NAV = [
-  { id: "optimize", label: "Оптимизатор", ready: true },
-  { id: "queue", label: "Очередь", ready: false },
-  { id: "presets", label: "Пресеты", ready: false },
-  { id: "history", label: "История", ready: false },
-  { id: "settings", label: "Настройки", ready: false },
-];
+const STATUS_LABEL: Record<Status, string> = {
+  probing: "анализ…",
+  ready: "ждёт",
+  running: "",
+  done: "готово",
+  failed: "ошибка",
+  cancelled: "отменён",
+};
+
+let nextItemId = 1;
+const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
 export default function App() {
   const [gpu, setGpu] = useState<GpuInfo | null>(null);
-  const [report, setReport] = useState<ProbeReport | null>(null);
-  const [probing, setProbing] = useState(false);
+  const [rife, setRife] = useState(false);
+  const [items, setItems] = useState<Item[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [job, setJob] = useState<Job>({ state: "idle" });
-  const jobIdRef = useRef<number | null>(null);
-  const [method, setMethod] = useState<Method>("tail");
-  const [retime, setRetime] = useState(2);
-  const [ratePatch, setRatePatch] = useState<RatePatch>("mvhd");
-  const [enh, setEnh] = useState<EnhanceOptions>(DEFAULT_ENHANCE);
+  const [queueOn, setQueueOn] = useState(false);
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [userPresets, setUserPresets] = useState<Preset[]>(loadUserPresets);
+  const [presetName, setPresetName] = useState<string | null>(null);
+
+  // The queue runner and job events read the latest state through refs.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const queueOnRef = useRef(false);
+
+  const patchItem = useCallback((id: number, patch: Partial<Item>) => {
+    itemsRef.current = itemsRef.current.map((it) => (it.id === id ? { ...it, ...patch } : it));
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  }, []);
+
+  const { method, retime, ratePatch, enh } = settings;
+  const setMethod = (v: Method) => setSettings((p) => ({ ...p, method: v }));
+  const setRetime = (v: number) => setSettings((p) => ({ ...p, retime: v }));
+  const setRatePatch = (v: RatePatch) => setSettings((p) => ({ ...p, ratePatch: v }));
+  const setEnh = (fn: (prev: EnhanceOptions) => EnhanceOptions) => setSettings((p) => ({ ...p, enh: fn(p.enh) }));
   const setEnhField = <K extends keyof EnhanceOptions>(key: K, value: EnhanceOptions[K]) =>
     setEnh((prev) => ({ ...prev, [key]: value }));
 
   useEffect(() => {
+    rifeAvailable().then(setRife).catch(() => setRife(false));
     gpuInfo().then(setGpu).catch(() => setGpu({ name: null, driver: null, memoryMb: null, isRtx: false, nvenc: [], note: "Не удалось определить видеокарту." }));
   }, []);
 
-  const analyze = useCallback(async (path: string) => {
-    setError(null);
-    setJob({ state: "idle" });
-    setProbing(true);
-    try {
-      setReport(await probeFile(path));
-    } catch (e) {
-      setReport(null);
-      setError(String(e));
-    } finally {
-      setProbing(false);
+  const addFiles = useCallback((paths: string[]) => {
+    const videos = paths.filter((f) => VIDEO_EXT.includes(f.split(".").pop()?.toLowerCase() ?? ""));
+    if (videos.length === 0) {
+      setError("Это не видеофайлы. Подходят: " + VIDEO_EXT.join(", ").toUpperCase());
+      return;
     }
-  }, []);
+    setError(null);
+    const known = new Set(itemsRef.current.filter((it) => it.status !== "done").map((it) => it.path));
+    const fresh: Item[] = videos
+      .filter((p) => !known.has(p))
+      .map((path) => ({
+        id: nextItemId++, path, name: baseName(path), status: "probing", report: null, jobId: null,
+        percent: 0, speed: null, stage: "", output: null, sizeBytes: 0, outReport: null, message: null,
+      }));
+    if (fresh.length === 0) return;
+    itemsRef.current = [...itemsRef.current, ...fresh];
+    setItems((prev) => [...prev, ...fresh]);
+    setSelectedId(fresh[0].id);
+    for (const it of fresh) {
+      probeFile(it.path)
+        .then((report) =>
+          patchItem(it.id, report.video
+            ? { report, status: "ready" }
+            : { report, status: "failed", message: "В файле нет видеодорожки." }))
+        .catch((e) => patchItem(it.id, { status: "failed", message: String(e) }));
+    }
+  }, [patchItem]);
 
   // Drag-and-drop from Explorer arrives as a webview event with real file paths.
   useEffect(() => {
@@ -89,66 +145,129 @@ export default function App() {
       else if (p.type === "leave") setDragOver(false);
       else if (p.type === "drop") {
         setDragOver(false);
-        const file = p.paths.find((f) => VIDEO_EXT.includes(f.split(".").pop()?.toLowerCase() ?? ""));
-        if (file) analyze(file);
-        else setError("Перетащите видеофайл: " + VIDEO_EXT.join(", ").toUpperCase());
+        addFiles(p.paths);
       }
     });
     return () => {
       un.then((f) => f());
     };
-  }, [analyze]);
+  }, [addFiles]);
+
+  /** Starts the next waiting file, or ends the queue when none is left. */
+  const startNext = useCallback(async () => {
+    if (!queueOnRef.current) return;
+    if (itemsRef.current.some((it) => it.status === "running")) return;
+    const next = itemsRef.current.find((it) => it.status === "ready");
+    if (!next) {
+      queueOnRef.current = false;
+      setQueueOn(false);
+      return;
+    }
+    patchItem(next.id, { status: "running", percent: 0, speed: null, stage: "Запуск…", message: null });
+    setSelectedId(next.id);
+    try {
+      const s = settingsRef.current;
+      const { jobId } = await startRemux(next.path, toRemuxOptions(s), s.enh);
+      patchItem(next.id, { jobId });
+    } catch (e) {
+      patchItem(next.id, { status: "failed", message: String(e) });
+      startNext();
+    }
+  }, [patchItem]);
 
   useEffect(
     () =>
       onJobEvents({
         progress: (p) => {
-          if (p.jobId === jobIdRef.current) setJob({ state: "running", jobId: p.jobId, percent: p.percent, speed: p.speed, stage: p.stage });
+          const it = itemsRef.current.find((x) => x.jobId === p.jobId);
+          if (it) patchItem(it.id, { percent: p.percent, speed: p.speed, stage: p.stage });
         },
-        done: async (d) => {
-          if (d.jobId !== jobIdRef.current) return;
-          jobIdRef.current = null;
-          setJob({ state: "done", output: d.output, sizeBytes: d.sizeBytes, report: null });
-          try {
-            const r = await probeFile(d.output);
-            setJob({ state: "done", output: d.output, sizeBytes: d.sizeBytes, report: r });
-          } catch {
-            /* the result is still usable without the second analysis */
-          }
+        done: (d) => {
+          const it = itemsRef.current.find((x) => x.jobId === d.jobId);
+          if (!it) return;
+          patchItem(it.id, { status: "done", jobId: null, percent: 100, output: d.output, sizeBytes: d.sizeBytes });
+          probeFile(d.output).then((outReport) => patchItem(it.id, { outReport })).catch(() => {});
+          startNext();
         },
         failed: (f) => {
-          if (f.jobId !== jobIdRef.current) return;
-          jobIdRef.current = null;
-          setJob({ state: "failed", message: f.message, cancelled: f.cancelled });
+          const it = itemsRef.current.find((x) => x.jobId === f.jobId);
+          if (!it) return;
+          patchItem(it.id, { status: f.cancelled ? "cancelled" : "failed", jobId: null, message: f.message });
+          startNext();
         },
       }),
-    [],
+    [patchItem, startNext],
   );
 
-  async function pickFile() {
-    const sel = await open({ multiple: false, directory: false, filters: [{ name: "Видео", extensions: VIDEO_EXT }] });
-    if (typeof sel === "string") analyze(sel);
+  async function pickFiles() {
+    const sel = await open({ multiple: true, directory: false, filters: [{ name: "Видео", extensions: VIDEO_EXT }] });
+    if (Array.isArray(sel)) addFiles(sel);
+    else if (typeof sel === "string") addFiles([sel]);
   }
 
-  async function run() {
-    if (!report) return;
-    setError(null);
-    try {
-      const { jobId } = await startRemux(report.path, {
-        retimeFactor: method === "retime" ? retime : 1,
-        ratePatch: method === "retime" ? ratePatch : "none",
-        audioTail: method === "tail",
-      }, enh);
-      jobIdRef.current = jobId;
-      setJob({ state: "running", jobId, percent: 0, speed: null, stage: "Запуск…" });
-    } catch (e) {
-      setJob({ state: "failed", message: String(e), cancelled: false });
+  function runQueue() {
+    // Files stopped earlier go back into the queue.
+    for (const it of itemsRef.current) {
+      if (it.status === "cancelled") patchItem(it.id, { status: "ready", message: null });
     }
+    queueOnRef.current = true;
+    setQueueOn(true);
+    startNext();
   }
 
-  const running = job.state === "running";
+  function stopQueue() {
+    queueOnRef.current = false;
+    setQueueOn(false);
+    const cur = itemsRef.current.find((it) => it.status === "running");
+    if (cur?.jobId != null) cancelJob(cur.jobId);
+  }
+
+  function removeItem(id: number) {
+    itemsRef.current = itemsRef.current.filter((it) => it.id !== id || it.status === "running");
+    setItems((prev) => prev.filter((it) => it.id !== id || it.status === "running"));
+    if (selectedId === id) setSelectedId(null);
+  }
+
+  function clearDone() {
+    itemsRef.current = itemsRef.current.filter((it) => it.status !== "done");
+    setItems((prev) => prev.filter((it) => it.status !== "done"));
+  }
+
+  // ---------- presets ----------
+  const allPresets = [...BUILTIN_PRESETS, ...userPresets];
+  const activePreset = allPresets.find((p) => sameSettings(p.settings, settings));
+
+  function savePreset() {
+    const name = (presetName ?? "").trim();
+    if (!name) return;
+    if (BUILTIN_PRESETS.some((p) => p.name === name)) {
+      setError(`«${name}» — встроенный пресет, выберите другое название.`);
+      return;
+    }
+    const list = [...userPresets.filter((p) => p.name !== name), { name, settings }];
+    setUserPresets(list);
+    if (!saveUserPresets(list)) setError("Не удалось сохранить пресет на диск: он пропадёт после закрытия приложения.");
+    else setError(null);
+    setPresetName(null);
+  }
+
+  function deletePreset(name: string) {
+    const list = userPresets.filter((p) => p.name !== name);
+    setUserPresets(list);
+    saveUserPresets(list);
+  }
+
+  const running = queueOn || items.some((it) => it.status === "running");
   const canEncode = !!gpu && gpu.nvenc.includes("h264");
+  const selected = items.find((it) => it.id === selectedId) ?? items[items.length - 1] ?? null;
+  const report = selected?.report ?? null;
+  const waiting = items.filter((it) => it.status === "ready" || it.status === "cancelled").length;
+  const finished = items.filter((it) => it.status === "done").length;
   const outSize = report?.video ? targetSize(report.video.width, report.video.height, enh.shortSide) : null;
+  // PNG frames take roughly 0.6 bytes per pixel: source frames plus generated ones.
+  const rifeDiskGb = report?.video && report.video.fps > 0
+    ? Math.max(1, Math.ceil((report.video.width * report.video.height * 0.65 * report.durationS * (report.video.fps + Math.max(report.video.fps, enh.fpsTarget))) / 1e9))
+    : 0;
   const outFps = report?.video ? (enh.fps === "keep" ? report.video.fps : Math.max(report.video.fps, enh.fpsTarget)) : 0;
 
   return (
@@ -161,71 +280,124 @@ export default function App() {
       </header>
 
       <div className="app">
-        <nav className="side" aria-label="Разделы">
-          {NAV.map((n) => (
-            <button key={n.id} className={"nav" + (n.id === "optimize" ? " on" : "")} disabled={!n.ready} title={n.ready ? undefined : "Будет в следующих версиях"}>
-              {n.label}
-              {!n.ready && <span className="soon">скоро</span>}
-            </button>
-          ))}
+        <nav className="side" aria-label="Очередь файлов">
+          <div className="side-h">
+            <h4>Очередь</h4>
+            {finished > 0 && !running && <button className="link" onClick={clearDone}>Убрать готовые</button>}
+          </div>
+          {items.length === 0 && <p className="hint">Файлов пока нет. Можно добавить сразу несколько.</p>}
+          <ul className="queue">
+            {items.map((it) => (
+              <li key={it.id} className={"q " + it.status + (selected?.id === it.id ? " on" : "")}>
+                <button className="q-main" onClick={() => setSelectedId(it.id)} title={it.path}>
+                  <span className="q-name">{it.name}</span>
+                  <span className="q-state">{it.status === "running" ? `${it.percent.toFixed(0)}%` : STATUS_LABEL[it.status]}</span>
+                </button>
+                {it.status !== "running" && (
+                  <button className="q-x" onClick={() => removeItem(it.id)} aria-label={`Убрать ${it.name} из очереди`}>×</button>
+                )}
+                {it.status === "running" && <span className="q-bar" style={{ width: `${it.percent}%` }} />}
+              </li>
+            ))}
+          </ul>
         </nav>
 
         <main className="main">
-          <button className={"drop" + (dragOver ? " over" : "")} onClick={pickFile} disabled={running}>
+          <button className={"drop" + (dragOver ? " over" : "")} onClick={pickFiles}>
             <span className="drop-icon" aria-hidden>⇪</span>
             <span>
-              <b>Перетащите видео сюда</b> или нажмите, чтобы выбрать · MP4, MOV, MKV, WEBM
+              <b>Перетащите видео сюда</b> или нажмите, чтобы выбрать · можно несколько · MP4, MOV, MKV, WEBM
             </span>
           </button>
 
           {error && <div className="alert">{error}</div>}
-          {probing && <div className="muted">Анализирую файл…</div>}
 
+          {selected?.status === "probing" && <div className="muted">Анализирую файл…</div>}
           {report && <FileCard report={report} />}
 
-          {!report && !probing && !error && (
+          {!selected && !error && (
             <div className="empty">
-              <p>Выберите ролик, и приложение покажет, что в нём мешает TikTok: кодек, битовую глубину, цветовые теги, положение moov-атома, частоту кадров.</p>
+              <p>Выберите ролики, и приложение покажет, что в них мешает TikTok: кодек, битовую глубину, цветовые теги, положение moov-атома, частоту кадров.</p>
               <p className="muted">Всё работает локально, файлы никуда не отправляются.</p>
             </div>
           )}
 
-          {job.state === "running" && (
+          {selected?.status === "running" && (
             <div className="prog">
               <div className="track">
-                <div className="fill" style={{ width: `${job.percent}%` }} />
+                <div className="fill" style={{ width: `${selected.percent}%` }} />
               </div>
               <div className="row">
-                <span>{job.stage}</span>
+                <span>{selected.stage}</span>
                 <span>
-                  {job.percent.toFixed(0)}%{job.speed ? ` · ${job.speed.toFixed(1)}×` : ""}
+                  {selected.percent.toFixed(0)}%{selected.speed ? ` · ${selected.speed.toFixed(1)}×` : ""}
                 </span>
               </div>
             </div>
           )}
 
-          {job.state === "done" && (
+          {selected?.status === "done" && selected.output && (
             <div className="result">
               <div className="result-h">
                 <span className="chip ok">Готово</span>
-                <span className="path" title={job.output}>{job.output}</span>
-                <span className="mono muted">{fmtBytes(job.sizeBytes)}</span>
+                <span className="path" title={selected.output}>{selected.output}</span>
+                <span className="mono muted">{fmtBytes(selected.sizeBytes)}</span>
               </div>
-              {job.report && (
+              {selected.outReport && (
                 <ul className="notes">
-                  {job.report.notes.map((n) => (
+                  {selected.outReport.notes.map((n) => (
                     <li key={n.code} className={"note " + n.level}>{n.message}</li>
                   ))}
                 </ul>
               )}
-              <button className="ghost" onClick={() => revealItemInDir(job.output)}>Показать в папке</button>
+              <button className="ghost" onClick={() => selected.output && revealItemInDir(selected.output)}>Показать в папке</button>
             </div>
           )}
 
-          {job.state === "failed" && <div className={job.cancelled ? "muted" : "alert"}>{job.message}</div>}
+          {selected && (selected.status === "failed" || selected.status === "cancelled") && selected.message && (
+            <div className={selected.status === "cancelled" ? "muted" : "alert"}>{selected.message}</div>
+          )}
         </main>
 
         <aside className="panel" aria-label="Параметры">
+          <h4>Пресет</h4>
+          <div className="field">
+            <select
+              id="preset"
+              aria-label="Пресет настроек"
+              value={activePreset ? activePreset.name : ""}
+              onChange={(e) => {
+                const p = allPresets.find((x) => x.name === e.target.value);
+                if (p) setSettings(p.settings);
+              }}
+              disabled={running}
+            >
+              {!activePreset && <option value="">Свои настройки</option>}
+              <optgroup label="Встроенные">
+                {BUILTIN_PRESETS.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+              </optgroup>
+              {userPresets.length > 0 && (
+                <optgroup label="Мои">
+                  {userPresets.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                </optgroup>
+              )}
+            </select>
+          </div>
+          {presetName === null ? (
+            <div className="row-btns">
+              <button className="ghost" onClick={() => setPresetName("")} disabled={running || !!activePreset} title={activePreset ? "Эти настройки уже сохранены как пресет" : undefined}>Сохранить как пресет</button>
+              {activePreset && !activePreset.builtin && (
+                <button className="ghost" onClick={() => deletePreset(activePreset.name)} disabled={running}>Удалить</button>
+              )}
+            </div>
+          ) : (
+            <form className="row-btns" onSubmit={(e) => { e.preventDefault(); savePreset(); }}>
+              <input id="presetName" className="text" autoFocus placeholder="Название пресета" maxLength={40} value={presetName} onChange={(e) => setPresetName(e.target.value)} />
+              <button className="ghost" type="submit" disabled={!presetName.trim()}>Сохранить</button>
+              <button className="ghost" type="button" onClick={() => setPresetName(null)}>Отмена</button>
+            </form>
+          )}
+
           <h4>Шаг 1 · Видео</h4>
           <div className="seg" role="tablist">
             <button role="tab" aria-selected={!enh.enabled} className={enh.enabled ? "" : "on"} onClick={() => setEnhField("enabled", false)} disabled={running}>Без изменений</button>
@@ -278,9 +450,16 @@ export default function App() {
                   <label htmlFor="fpsMode">Как достраивать кадры</label>
                   <select id="fpsMode" value={enh.fps} onChange={(e) => setEnhField("fps", e.target.value as EnhanceOptions["fps"])} disabled={running}>
                     <option value="blend">Смешивание соседних кадров (быстро)</option>
+                    <option value="rife" disabled={!rife}>Нейросеть RIFE (лучшее качество){rife ? "" : " — не установлена"}</option>
                     <option value="motion">По движению (медленно, возможны артефакты)</option>
                   </select>
                 </div>
+              )}
+              {enh.fps === "rife" && (
+                <p className="hint warn">
+                  RIFE временно сохраняет каждый кадр на диск рядом с роликом
+                  {rifeDiskGb ? `: для этого файла нужно около ${rifeDiskGb} ГБ свободного места` : ""}. После обработки кадры удаляются.
+                </p>
               )}
               <div className="field">
                 <label htmlFor="denoise">Шумоподавление: {LEVELS[enh.denoise]}</label>
@@ -370,9 +549,11 @@ export default function App() {
 
           <span className="sp" />
           {running ? (
-            <button className="go cancel" onClick={() => job.state === "running" && cancelJob(job.jobId)}>Отменить</button>
+            <button className="go cancel" onClick={stopQueue}>Остановить</button>
           ) : (
-            <button className="go" onClick={run} disabled={!report || !report.video}>Оптимизировать</button>
+            <button className="go" onClick={runQueue} disabled={waiting === 0}>
+              {waiting > 1 ? `Оптимизировать (${waiting})` : "Оптимизировать"}
+            </button>
           )}
         </aside>
       </div>

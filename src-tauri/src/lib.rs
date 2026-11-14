@@ -18,6 +18,12 @@ async fn gpu_info() -> gpu::GpuInfo {
         .unwrap_or_default()
 }
 
+/// Whether the optional RIFE tool is installed next to the app.
+#[tauri::command]
+fn rife_available() -> bool {
+    tools::rife().is_some()
+}
+
 #[tauri::command]
 async fn probe_file(path: String) -> Result<probe::ProbeReport, String> {
     tauri::async_runtime::spawn_blocking(move || probe::probe(&path))
@@ -66,7 +72,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(remux::Jobs::default())
-        .invoke_handler(tauri::generate_handler![gpu_info, probe_file, start_remux, cancel_job])
+        .invoke_handler(tauri::generate_handler![gpu_info, rife_available, probe_file, start_remux, cancel_job])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

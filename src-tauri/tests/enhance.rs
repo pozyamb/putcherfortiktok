@@ -140,3 +140,77 @@ fn frame_rate_goal_of_120() {
     let g = args.iter().position(|a| a == "-g").unwrap();
     assert_eq!(args[g + 1], "240");
 }
+
+#[test]
+fn rife_helpers() {
+    let r = sample_report(); // 30 fps
+    let o: EnhanceOptions = serde_json::from_str(r#"{"enabled":true,"fps":"rife","fpsTarget":120}"#).unwrap();
+    assert!(enhance::uses_rife(&r, &o));
+    // RIFE makes the frames, so ffmpeg must not change the rate again.
+    let chain = enhance::filter_chain(&r, &o);
+    assert!(!chain.contains("fps=") && !chain.contains("minterpolate"), "{chain}");
+    assert_eq!(enhance::rife_frame_count(90, 30.0, 120), 360);
+    assert_eq!(enhance::rife_frame_count(250, 25.0, 60), 600);
+
+    let off: EnhanceOptions = serde_json::from_str(r#"{"enabled":false,"fps":"rife"}"#).unwrap();
+    assert!(!enhance::uses_rife(&r, &off));
+
+    let args = enhance::build_args_from_frames(&r, std::path::Path::new("C:/t/out"), 120.0, std::path::Path::new("C:/v/o.mp4"), &o);
+    let pos = |x: &str| args.iter().position(|a| a == x).unwrap();
+    assert_eq!(args[pos("-framerate") + 1], "120");
+    assert!(args.iter().any(|a| a.ends_with("%08d.png")));
+    assert!(args.iter().any(|a| a == "1:a:0?"));
+
+    let listing = "[0 NVIDIA GeForce RTX 5060]  queueC=2[8]\n[1 AMD Radeon(TM) Graphics]  queueC=1[2]";
+    assert_eq!(tools::parse_rife_gpu(listing), 0);
+    assert_eq!(tools::parse_rife_gpu("[0 AMD Radeon(TM) Graphics] x\n[1 NVIDIA GeForce RTX 5060] y"), 1);
+    assert_eq!(tools::parse_rife_gpu("nothing here"), 0);
+}
+
+/// Real run with RIFE: 30 fps → 60 fps, exact length kept. Skipped when RIFE or NVENC is missing.
+#[test]
+fn rife_end_to_end() {
+    let (Ok(ffmpeg), Some((rife_exe, model))) = (tools::ffmpeg(), tools::rife()) else {
+        eprintln!("ffmpeg or RIFE not found, skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("rife-e2e-{}", std::process::id()));
+    let (din, dout) = (dir.join("f").join("in"), dir.join("f").join("out"));
+    std::fs::create_dir_all(&din).unwrap();
+    std::fs::create_dir_all(&dout).unwrap();
+    let input = dir.join("sample.mp4");
+    let run = |args: Vec<String>| {
+        let out = tools::command(&ffmpeg).args(&args).stdout(std::process::Stdio::null()).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    let s = |x: &str| x.to_string();
+    run(vec![s("-hide_banner"), s("-v"), s("error"), s("-y"), s("-f"), s("lavfi"), s("-i"), s("testsrc2=s=360x640:r=30:d=2"),
+             s("-f"), s("lavfi"), s("-i"), s("sine=f=440:d=2"), s("-c:v"), s("libx264"), s("-pix_fmt"), s("yuv420p"),
+             s("-c:a"), s("aac"), s("-shortest"), input.to_string_lossy().into_owned()]);
+
+    let report = probe::probe(input.to_str().unwrap()).unwrap();
+    let enh: EnhanceOptions = serde_json::from_str(r#"{"enabled":true,"fps":"rife","fpsTarget":60,"bitrateMbps":8}"#).unwrap();
+    run(enhance::extract_frames_args(&report, &din));
+    let frames_in = std::fs::read_dir(&din).unwrap().count() as u64;
+    assert_eq!(frames_in, 60);
+    let frames_out = enhance::rife_frame_count(frames_in, 30.0, 60);
+    let gpu = tools::rife_gpu_index(&rife_exe);
+    let out = tools::command(&rife_exe).args(enhance::rife_args(&din, &dout, frames_out, &model, gpu)).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_dir(&dout).unwrap().count() as u64, 120);
+
+    let stage1 = dir.join("stage1.mp4");
+    let nvenc_args = enhance::build_args_from_frames(&report, &dout, 60.0, &stage1, &enh);
+    let enc = tools::command(&ffmpeg).args(&nvenc_args).stdout(std::process::Stdio::null()).output().unwrap();
+    if !enc.status.success() {
+        eprintln!("NVENC not available, skipping the encode check");
+        std::fs::remove_dir_all(&dir).unwrap();
+        return;
+    }
+    let done = probe::probe(stage1.to_str().unwrap()).unwrap();
+    let v = done.video.as_ref().unwrap();
+    assert!((v.fps - 60.0).abs() < 0.5, "fps {}", v.fps);
+    assert!((done.duration_s - report.duration_s).abs() < 0.1, "duration {}", done.duration_s);
+    assert!(done.audio.is_some());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

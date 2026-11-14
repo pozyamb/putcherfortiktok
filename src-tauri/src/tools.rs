@@ -61,3 +61,42 @@ pub fn ffprobe() -> Result<PathBuf, String> {
         "ffprobe не найден. Запустите scripts/fetch-ffmpeg.ps1, чтобы скачать его.".to_string()
     })
 }
+
+/// The optional RIFE frame interpolation tool: (executable, model directory).
+/// Looked up next to the app (`rife/`) and in `src-tauri/binaries/rife` during development.
+pub fn rife() -> Option<(PathBuf, PathBuf)> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.join("rife"));
+        }
+    }
+    dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries").join("rife"));
+    dirs.into_iter().find_map(|d| {
+        let exe = d.join(format!("rife-ncnn-vulkan{}", std::env::consts::EXE_SUFFIX));
+        let model = d.join("rife-v4.6");
+        (exe.is_file() && model.is_dir()).then_some((exe, model))
+    })
+}
+
+/// Index of the NVIDIA GPU as RIFE (ncnn/Vulkan) numbers devices; 0 when it cannot be told.
+/// RIFE prints its device list as `[N name]` lines whenever it starts.
+pub fn rife_gpu_index(rife_exe: &std::path::Path) -> u32 {
+    let out = command(rife_exe).args(["-v", "-i", "?", "-o", "?"]).output();
+    let Ok(out) = out else { return 0 };
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    parse_rife_gpu(&text)
+}
+
+pub fn parse_rife_gpu(text: &str) -> u32 {
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix('[') else { continue };
+        let Some((idx, name)) = rest.split_once(' ') else { continue };
+        if name.to_uppercase().contains("NVIDIA") {
+            if let Ok(n) = idx.parse() {
+                return n;
+            }
+        }
+    }
+    0
+}

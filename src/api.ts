@@ -74,6 +74,7 @@ export interface JobFailed {
 }
 
 export const gpuInfo = () => invoke<GpuInfo>("gpu_info");
+export const rifeAvailable = () => invoke<boolean>("rife_available");
 export const probeFile = (path: string) => invoke<ProbeReport>("probe_file", { path });
 export type RatePatch = "none" | "mvhd" | "elst";
 export interface RemuxOptions {
@@ -95,7 +96,7 @@ export interface EnhanceOptions {
   /** 0 = off … 3 = strong */
   sharpen: number;
   deband: boolean;
-  fps: "keep" | "blend" | "motion";
+  fps: "keep" | "blend" | "motion" | "rife";
   /** Frame rate to reach when fps is not "keep": 60 or 120. */
   fpsTarget: number;
   codec: "h264" | "hevc";
