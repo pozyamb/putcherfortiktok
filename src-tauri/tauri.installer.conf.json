@@ -1,0 +1,24 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "shortDescription": "Подготовка видео к загрузке в TikTok на видеокартах RTX",
+    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
+    "resources": {
+      "binaries/rife/rife-ncnn-vulkan.exe": "rife/rife-ncnn-vulkan.exe",
+      "binaries/rife/vcomp140.dll": "rife/vcomp140.dll",
+      "binaries/rife/LICENSE": "rife/LICENSE",
+      "binaries/rife/rife-v4.6/flownet.bin": "rife/rife-v4.6/flownet.bin",
+      "binaries/rife/rife-v4.6/flownet.param": "rife/rife-v4.6/flownet.param",
+      "../packaging/README.txt": "README.txt"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "offlineInstaller" },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Russian", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}
