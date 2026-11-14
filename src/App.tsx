@@ -317,7 +317,7 @@ export default function App() {
 
           {!selected && !error && (
             <div className="empty">
-              <p>Выберите ролики, и приложение покажет, что в них мешает TikTok: кодек, битовую глубину, цветовые теги, положение moov-атома, частоту кадров.</p>
+              <p>Выберите ролики, и приложение покажет, что в них мешает TikTok: кодек, битовую глубину, цветовые теги, частоту кадров.</p>
               <p className="muted">Всё работает локально, файлы никуда не отправляются.</p>
             </div>
           )}
@@ -490,55 +490,38 @@ export default function App() {
           <h4>Шаг 2 · Патч</h4>
           <div className="field">
             <select id="method" aria-label="Способ обработки" value={method} onChange={(e) => setMethod(e.target.value as Method)} disabled={running}>
-              <option value="tail">Патч хвоста аудио (как на сайте сейчас)</option>
-              <option value="retime">Ретайминг (прежний способ)</option>
-              <option value="plain">Только ремукс</option>
+              <option value="tail">Способ 1 (актуальный)</option>
+              <option value="retime">Способ 2 (прежний)</option>
+              <option value="plain">Без патча</option>
             </select>
           </div>
 
-          <h4>Что будет сделано</h4>
-          <ul className="checks">
-            <li>moov-атом в начало файла (faststart)</li>
-            {method === "tail" ? (
-              <>
-                <li>Видео и метаданные дорожек без изменений</li>
-                <li>Последние 4 аудиокадра заменяются служебной вставкой: последние ~0,1 с звука теряются</li>
-              </>
-            ) : (
-              <>
-                <li>Цветовые теги BT.709, если их нет</li>
-                <li>Удаление метаданных, глав и лишних дорожек</li>
-              </>
-            )}
-            <li>Результат: <span className="mono">имя_tiktok.mp4</span> рядом с исходником</li>
-          </ul>
+          {method !== "plain" && <p className="hint">Позволяет выкладывать видео в TikTok без потери качества.</p>}
+          <p className="hint">Результат: <span className="mono">имя_tiktok.mp4</span> рядом с исходником.</p>
 
-          {method === "tail" && (
-            <p className="hint">
-              Повторяет файл, который сайт-пример выдаёт сейчас: проверено побайтным сравнением на одном ролике.
-              {report && !report.audio ? " В этом файле нет звука, способ не сработает." : ""}
-            </p>
+          {method === "tail" && report && !report.audio && (
+            <p className="hint warn">В этом файле нет звука, способ 1 не сработает.</p>
           )}
 
           {method === "retime" && (
             <>
               <div className="field">
-                <label htmlFor="retime">Заявленная частота кадров</label>
+                <label htmlFor="retime">Сила</label>
                 <select id="retime" value={retime} onChange={(e) => setRetime(Number(e.target.value))} disabled={running}>
-                  <option value={2}>÷2{report?.video ? ` (${fmtFps(report.video.fps / 2)} fps)` : ""}</option>
-                  <option value={4}>÷4{report?.video ? ` (${fmtFps(report.video.fps / 4)} fps)` : ""}</option>
+                  <option value={2}>×2</option>
+                  <option value={4}>×4</option>
                 </select>
               </div>
               <div className="field">
-                <label htmlFor="ratePatch">Метка скорости в заголовке</label>
+                <label htmlFor="ratePatch">Вариант</label>
                 <select id="ratePatch" value={ratePatch} onChange={(e) => setRatePatch(e.target.value as RatePatch)} disabled={running}>
-                  <option value="mvhd">mvhd rate ×{retime}</option>
-                  <option value="elst">elst media rate ×{retime}</option>
-                  <option value="none">Без метки</option>
+                  <option value="mvhd">А</option>
+                  <option value="elst">Б</option>
+                  <option value="none">В</option>
                 </select>
               </div>
               <p className="hint warn">
-                Кадры те же, но файл объявляет частоту в {retime} раза ниже и на компьютере играет замедленно. Сработает ли это в TikTok, не проверено: сначала загрузите тестовый ролик.
+                После этого способа файл на компьютере играет замедленно. В TikTok он сейчас может не сработать: сначала загрузите тестовый ролик.
               </p>
             </>
           )}
@@ -594,7 +577,7 @@ function FileCard({ report: r }: { report: ProbeReport }) {
     <section className="file">
       <div className="file-h">
         <strong title={r.path}>{r.fileName}</strong>
-        <span className={"chip " + (r.remuxOk ? "ok" : "warn")}>{r.remuxOk ? "Ремукса достаточно" : "Нужно перекодирование"}</span>
+        <span className={"chip " + (r.remuxOk ? "ok" : "warn")}>{r.remuxOk ? "Готов к патчу" : "Нужно перекодирование"}</span>
       </div>
       <div className="specs">
         {specs.map(([k, val]) => (
