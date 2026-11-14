@@ -15,6 +15,7 @@ fn main() {
             let res = out.join(name);
             if res.is_file() {
                 println!("cargo:rustc-link-arg-tests={}", res.display());
+                println!("cargo:rustc-link-arg-examples={}", res.display());
                 break;
             }
         }

@@ -18,7 +18,9 @@ import {
 } from "./api";
 import "./App.css";
 
-const VIDEO_EXT = ["mp4", "mov", "m4v", "mkv", "webm", "avi"];
+type Method = "tail" | "retime" | "plain";
+
+const VIDEO_EXT =["mp4", "mov", "m4v", "mkv", "webm", "avi"];
 
 type Job =
   | { state: "idle" }
@@ -42,7 +44,8 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [job, setJob] = useState<Job>({ state: "idle" });
   const jobIdRef = useRef<number | null>(null);
-  const [retime, setRetime] = useState(1);
+  const [method, setMethod] = useState<Method>("tail");
+  const [retime, setRetime] = useState(2);
   const [ratePatch, setRatePatch] = useState<RatePatch>("mvhd");
 
   useEffect(() => {
@@ -116,7 +119,11 @@ export default function App() {
     if (!report) return;
     setError(null);
     try {
-      const { jobId } = await startRemux(report.path, { retimeFactor: retime, ratePatch: retime > 1 ? ratePatch : "none" });
+      const { jobId } = await startRemux(report.path, {
+        retimeFactor: method === "retime" ? retime : 1,
+        ratePatch: method === "retime" ? ratePatch : "none",
+        audioTail: method === "tail",
+      });
       jobIdRef.current = jobId;
       setJob({ state: "running", jobId, percent: 0, speed: null });
     } catch (e) {
@@ -208,25 +215,48 @@ export default function App() {
           </div>
           <p className="hint">Кадры не перекодируются: меняются только контейнер и метаданные. Качество не теряется, занимает секунды.</p>
 
+          <h4>Способ</h4>
+          <div className="field">
+            <select id="method" aria-label="Способ обработки" value={method} onChange={(e) => setMethod(e.target.value as Method)} disabled={running}>
+              <option value="tail">Патч хвоста аудио (как на сайте сейчас)</option>
+              <option value="retime">Ретайминг (прежний способ)</option>
+              <option value="plain">Только ремукс</option>
+            </select>
+          </div>
+
           <h4>Что будет сделано</h4>
           <ul className="checks">
             <li>moov-атом в начало файла (faststart)</li>
-            <li>Цветовые теги BT.709, если их нет</li>
-            <li>Удаление метаданных, глав и лишних дорожек</li>
+            {method === "tail" ? (
+              <>
+                <li>Видео и метаданные дорожек без изменений</li>
+                <li>Последние 4 аудиокадра заменяются служебной вставкой: последние ~0,1 с звука теряются</li>
+              </>
+            ) : (
+              <>
+                <li>Цветовые теги BT.709, если их нет</li>
+                <li>Удаление метаданных, глав и лишних дорожек</li>
+              </>
+            )}
             <li>Результат: <span className="mono">имя_tiktok.mp4</span> рядом с исходником</li>
           </ul>
 
-          <h4>Ретайминг · эксперимент</h4>
-          <div className="field">
-            <label htmlFor="retime">Заявленная частота кадров</label>
-            <select id="retime" value={retime} onChange={(e) => setRetime(Number(e.target.value))} disabled={running}>
-              <option value={1}>Не менять</option>
-              <option value={2}>÷2{report?.video ? ` (${fmtFps(report.video.fps / 2)} fps)` : ""}</option>
-              <option value={4}>÷4{report?.video ? ` (${fmtFps(report.video.fps / 4)} fps)` : ""}</option>
-            </select>
-          </div>
-          {retime > 1 && (
+          {method === "tail" && (
+            <p className="hint">
+              Повторяет файл, который сайт-пример выдаёт сейчас: проверено побайтным сравнением на одном ролике.
+              {report && !report.audio ? " В этом файле нет звука, способ не сработает." : ""}
+            </p>
+          )}
+
+          {method === "retime" && (
             <>
+              <div className="field">
+                <label htmlFor="retime">Заявленная частота кадров</label>
+                <select id="retime" value={retime} onChange={(e) => setRetime(Number(e.target.value))} disabled={running}>
+                  <option value={2}>÷2{report?.video ? ` (${fmtFps(report.video.fps / 2)} fps)` : ""}</option>
+                  <option value={4}>÷4{report?.video ? ` (${fmtFps(report.video.fps / 4)} fps)` : ""}</option>
+                </select>
+              </div>
               <div className="field">
                 <label htmlFor="ratePatch">Метка скорости в заголовке</label>
                 <select id="ratePatch" value={ratePatch} onChange={(e) => setRatePatch(e.target.value as RatePatch)} disabled={running}>

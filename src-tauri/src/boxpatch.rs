@@ -180,3 +180,137 @@ pub fn patch_file(path: &Path, factor: u32, mode: RatePatch) -> Result<Patched, 
     }
     Err("В файле нет бокса moov".into())
 }
+
+// ---------- audio tail patch ----------
+
+/// Bytes found at the start of each of the last four audio frames in a file produced
+/// by the reference web optimizer (November 2026); the rest of every frame was zeros.
+/// The frame sizes and all sample tables were left untouched.
+pub const AUDIO_TAIL_PATTERN: [u8; 15] =
+    [0xa0, 0xa0, 0x00, 0x40, 0x01, 0x28, 0x00, 0x64, 0x00, 0x00, 0x03, 0x50, 0x00, 0x00, 0x38];
+
+/// How many trailing audio frames the reference file had overwritten.
+pub const AUDIO_TAIL_FRAMES: usize = 4;
+
+/// (file offset, size) of every sample of the first audio track, from a `moov` payload.
+pub fn audio_samples(moov: &[u8]) -> Result<Vec<(u64, u32)>, String> {
+    let top = children(moov, 0, moov.len());
+    for trak in top.iter().filter(|x| &x.kind == b"trak") {
+        let tb = children(moov, trak.body, trak.end);
+        let Some(mdia) = find(&tb, b"mdia") else { continue };
+        let mb = children(moov, mdia.body, mdia.end);
+        let is_audio = find(&mb, b"hdlr").map(|h| moov.get(h.body + 8..h.body + 12) == Some(b"soun")).unwrap_or(false);
+        if !is_audio {
+            continue;
+        }
+        let minf = find(&mb, b"minf").ok_or("Аудиодорожка повреждена (нет minf)")?;
+        let nb = children(moov, minf.body, minf.end);
+        let stbl = find(&nb, b"stbl").ok_or("Аудиодорожка повреждена (нет stbl)")?;
+        let sb = children(moov, stbl.body, stbl.end);
+        let stsz = find(&sb, b"stsz").ok_or("Аудиодорожка повреждена (нет stsz)")?;
+        let stsc = find(&sb, b"stsc").ok_or("Аудиодорожка повреждена (нет stsc)")?;
+        let (chunks, wide) = match (find(&sb, b"stco"), find(&sb, b"co64")) {
+            (Some(c), _) => (c, false),
+            (None, Some(c)) => (c, true),
+            _ => return Err("Аудиодорожка повреждена (нет stco)".into()),
+        };
+        let bad = || "Таблицы аудиодорожки повреждены".to_string();
+        let need = |b: &BoxRef, n: usize| if b.body + n <= b.end { Ok(()) } else { Err(bad()) };
+
+        need(stsz, 12)?;
+        let uniform = u32_at(moov, stsz.body + 4);
+        let n_samples = u32_at(moov, stsz.body + 8) as usize;
+        if uniform == 0 {
+            need(stsz, 12 + n_samples * 4)?;
+        }
+        need(stsc, 8)?;
+        let n_sc = u32_at(moov, stsc.body + 4) as usize;
+        need(stsc, 8 + n_sc * 12)?;
+        need(chunks, 8)?;
+        let n_chunks = u32_at(moov, chunks.body + 4) as usize;
+        need(chunks, 8 + n_chunks * if wide { 8 } else { 4 })?;
+        if n_sc == 0 {
+            return Err(bad());
+        }
+
+        let mut out = Vec::with_capacity(n_samples);
+        let mut entry = 0;
+        for chunk in 1..=n_chunks {
+            while entry + 1 < n_sc && u32_at(moov, stsc.body + 8 + (entry + 1) * 12) as usize <= chunk {
+                entry += 1;
+            }
+            let per_chunk = u32_at(moov, stsc.body + 8 + entry * 12 + 4) as usize;
+            let mut off = if wide {
+                u64_at(moov, chunks.body + 8 + (chunk - 1) * 8)
+            } else {
+                u32_at(moov, chunks.body + 8 + (chunk - 1) * 4) as u64
+            };
+            for _ in 0..per_chunk {
+                if out.len() == n_samples {
+                    break;
+                }
+                let size = if uniform != 0 { uniform } else { u32_at(moov, stsz.body + 12 + out.len() * 4) };
+                out.push((off, size));
+                off += size as u64;
+            }
+        }
+        return Ok(out);
+    }
+    Err("В файле нет аудиодорожки: этот способ неприменим".into())
+}
+
+/// Reads the payload of the top-level `moov` box.
+fn read_moov(f: &mut std::fs::File) -> Result<Vec<u8>, String> {
+    let io = |e: std::io::Error| format!("Не удалось прочитать файл: {e}");
+    let len = f.metadata().map_err(io)?.len();
+    let mut pos = 0u64;
+    while pos + 8 <= len {
+        f.seek(SeekFrom::Start(pos)).map_err(io)?;
+        let mut hdr = [0u8; 16];
+        f.read_exact(&mut hdr[..8]).map_err(io)?;
+        let mut size = u32_at(&hdr, 0) as u64;
+        let mut hdr_len = 8u64;
+        if size == 1 {
+            f.read_exact(&mut hdr[8..]).map_err(io)?;
+            size = u64_at(&hdr, 8);
+            hdr_len = 16;
+        } else if size == 0 {
+            size = len - pos;
+        }
+        if size < hdr_len || pos + size > len {
+            break;
+        }
+        if &hdr[4..8] == b"moov" {
+            let mut moov = vec![0u8; (size - hdr_len) as usize];
+            f.read_exact(&mut moov).map_err(io)?;
+            return Ok(moov);
+        }
+        pos += size;
+    }
+    Err("В файле нет бокса moov".into())
+}
+
+/// Overwrites the last `frames` audio frames in place: `AUDIO_TAIL_PATTERN`, then zeros,
+/// keeping every frame's size. Returns how many frames were rewritten.
+pub fn patch_audio_tail(path: &Path, frames: usize) -> Result<usize, String> {
+    let io = |e: std::io::Error| format!("Не удалось изменить файл: {e}");
+    let mut f = OpenOptions::new().read(true).write(true).open(path).map_err(io)?;
+    let len = f.metadata().map_err(io)?.len();
+    let moov = read_moov(&mut f)?;
+    let samples = audio_samples(&moov)?;
+    let tail = &samples[samples.len().saturating_sub(frames)..];
+    if tail.is_empty() {
+        return Err("В аудиодорожке нет кадров".into());
+    }
+    for &(off, size) in tail {
+        if off + size as u64 > len {
+            return Err("Таблицы аудиодорожки указывают за пределы файла".into());
+        }
+        let mut frame = vec![0u8; size as usize];
+        let n = AUDIO_TAIL_PATTERN.len().min(frame.len());
+        frame[..n].copy_from_slice(&AUDIO_TAIL_PATTERN[..n]);
+        f.seek(SeekFrom::Start(off)).map_err(io)?;
+        f.write_all(&frame).map_err(io)?;
+    }
+    Ok(tail.len())
+}

@@ -26,12 +26,25 @@ pub struct Options {
     pub retime_factor: u32,
     /// EXPERIMENTAL: playback-rate hint written into the header after a retime.
     pub rate_patch: RatePatch,
+    /// Overwrite the last audio frames the way the reference web optimizer does.
+    pub audio_tail: bool,
 }
 
 impl Options {
     pub fn factor(&self) -> u32 {
         self.retime_factor.clamp(1, 16)
     }
+}
+
+/// Patches applied to the finished file, after ffmpeg has closed it.
+pub fn post_process(output: &Path, opts: Options) -> Result<(), String> {
+    if opts.factor() > 1 {
+        boxpatch::patch_file(output, opts.factor(), opts.rate_patch)?;
+    }
+    if opts.audio_tail {
+        boxpatch::patch_audio_tail(output, boxpatch::AUDIO_TAIL_FRAMES)?;
+    }
+    Ok(())
 }
 use crate::tools;
 
@@ -102,7 +115,8 @@ pub fn build_args(report: &ProbeReport, output: &Path, opts: Options) -> Vec<Str
     }
 
     // Tag BT.709 in the bitstream itself; container-level flags are ignored with stream copy.
-    if let Some(v) = &report.video {
+    // Skipped with the audio tail patch: the reference file had an untouched video bitstream.
+    if let (Some(v), false) = (&report.video, opts.audio_tail) {
         if v.color_primaries.is_none() && v.bit_depth == 8 {
             let bsf = match v.codec.as_str() {
                 "h264" => Some("h264_metadata"),
@@ -118,10 +132,14 @@ pub fn build_args(report: &ProbeReport, output: &Path, opts: Options) -> Vec<Str
         }
     }
 
-    a.extend(
-        ["-map_metadata", "-1", "-map_chapters", "-1", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats"]
-            .map(String::from),
-    );
+    if opts.audio_tail {
+        // Match the reference file: track metadata (language, handler names) kept,
+        // movie timescale 1000 as written by the ffmpeg build it was made with.
+        a.extend(["-movie_timescale", "1000"].map(String::from));
+    } else {
+        a.extend(["-map_metadata", "-1", "-map_chapters", "-1"].map(String::from));
+    }
+    a.extend(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats"].map(String::from));
     a.push(output.to_string_lossy().into_owned());
     a
 }
@@ -183,9 +201,7 @@ pub fn start(app: AppHandle, jobs: Jobs, job_id: u64, report: ProbeReport, opts:
 
         // The header patch runs only after ffmpeg has closed the file.
         let patch_err = match &status {
-            Some(Ok(s)) if s.success() && opts.factor() > 1 => {
-                boxpatch::patch_file(Path::new(&out_str), opts.factor(), opts.rate_patch).err()
-            }
+            Some(Ok(s)) if s.success() => post_process(Path::new(&out_str), opts).err(),
             _ => None,
         };
         if let Some(message) = patch_err {

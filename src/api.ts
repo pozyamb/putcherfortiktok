@@ -80,6 +80,8 @@ export interface RemuxOptions {
   retimeFactor: number;
   /** Experimental: playback-rate hint written into the header after a retime. */
   ratePatch: RatePatch;
+  /** Overwrite the last audio frames the way the reference web optimizer does. */
+  audioTail: boolean;
 }
 export const startRemux = (path: string, options: RemuxOptions) =>
   invoke<{ jobId: number; output: string }>("start_remux", { path, options });
