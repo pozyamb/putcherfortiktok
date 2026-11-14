@@ -288,7 +288,7 @@ fn assess(r: &ProbeReport) -> (Vec<Note>, bool) {
     }
 
     match v.color_primaries.as_deref() {
-        None => notes.push(Note::new("warn", "color_tags", "Нет цветовых тегов: ремукс пропишет BT.709")),
+        None => notes.push(Note::new("warn", "color_tags", "Нет цветовых тегов: будет исправлено")),
         Some("bt2020") => {
             remux_ok = false;
             notes.push(Note::new("warn", "hdr", "HDR (BT.2020): TikTok может исказить цвета, лучше перевести в SDR"));
@@ -297,8 +297,8 @@ fn assess(r: &ProbeReport) -> (Vec<Note>, bool) {
     }
 
     match r.moov_first {
-        Some(true) => notes.push(Note::new("ok", "faststart", "moov в начале файла")),
-        Some(false) => notes.push(Note::new("warn", "faststart", "moov в конце файла: ремукс перенесёт его в начало")),
+        Some(true) => notes.push(Note::new("ok", "faststart", "Файл готов к потоковой загрузке")),
+        Some(false) => notes.push(Note::new("warn", "faststart", "Файл не готов к потоковой загрузке: будет исправлено")),
         None => {}
     }
 
@@ -324,7 +324,7 @@ fn assess(r: &ProbeReport) -> (Vec<Note>, bool) {
     }
 
     if r.extra_streams > 0 {
-        notes.push(Note::new("info", "extra_streams", format!("Лишних дорожек: {} — ремукс их уберёт", r.extra_streams)));
+        notes.push(Note::new("info", "extra_streams", format!("Лишних дорожек: {} — будут убраны", r.extra_streams)));
     }
 
     (notes, remux_ok)

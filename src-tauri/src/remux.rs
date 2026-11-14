@@ -358,7 +358,7 @@ pub fn start(
             }
             let args = build_args(&source, &output, opts);
             let duration = source.duration_s * opts.factor() as f64;
-            run_stage(&app, &jobs, job_id, "Ремукс и патч", &args, duration, remux_from, 100.0)?;
+            run_stage(&app, &jobs, job_id, "Патч", &args, duration, remux_from, 100.0)?;
             if jobs.is_cancelled(job_id) {
                 return Err(StageError::Cancelled);
             }

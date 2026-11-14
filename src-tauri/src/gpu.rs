@@ -73,7 +73,7 @@ pub fn detect() -> GpuInfo {
     }
 
     if info.nvenc.is_empty() {
-        info.note = Some("NVENC недоступен: доступен только режим «Ремукс».".into());
+        info.note = Some("NVENC недоступен: доступен только патч, без улучшения видео.".into());
     }
     info
 }
