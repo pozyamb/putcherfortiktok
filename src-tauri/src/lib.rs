@@ -1,4 +1,5 @@
 pub mod boxpatch;
+pub mod enhance;
 pub mod gpu;
 pub mod probe;
 pub mod remux;
@@ -37,6 +38,7 @@ async fn start_remux(
     jobs: State<'_, remux::Jobs>,
     path: String,
     options: Option<remux::Options>,
+    enhance: Option<enhance::EnhanceOptions>,
 ) -> Result<Started, String> {
     let report = tauri::async_runtime::spawn_blocking(move || probe::probe(&path))
         .await
@@ -45,7 +47,11 @@ async fn start_remux(
         return Err("В файле нет видеодорожки.".into());
     }
     let job_id = NEXT_JOB.fetch_add(1, Ordering::Relaxed);
-    let output = remux::start(app, jobs.inner().clone(), job_id, report, options.unwrap_or_default())?;
+    let output = remux::start(app, jobs.inner().clone(), job_id,
+        report,
+        options.unwrap_or_default(),
+        enhance.unwrap_or_default(),
+    )?;
     Ok(Started { job_id, output })
 }
 

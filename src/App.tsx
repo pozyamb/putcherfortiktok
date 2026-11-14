@@ -12,6 +12,8 @@ import {
   onJobEvents,
   probeFile,
   startRemux,
+  DEFAULT_ENHANCE,
+  type EnhanceOptions,
   type GpuInfo,
   type ProbeReport,
   type RatePatch,
@@ -20,11 +22,21 @@ import "./App.css";
 
 type Method = "tail" | "retime" | "plain";
 
+const LEVELS = ["выкл", "слабо", "средне", "сильно"];
+
+/** Mirrors `enhance::target_size` in Rust: short side → target, aspect kept, even numbers. */
+function targetSize(w: number, h: number, shortSide: number): [number, number] {
+  const even = (v: number) => Math.max(1, Math.round(v / 2)) * 2;
+  if (!shortSide || !w || !h) return [even(w), even(h)];
+  const k = shortSide / Math.min(w, h);
+  return [even(w * k), even(h * k)];
+}
+
 const VIDEO_EXT =["mp4", "mov", "m4v", "mkv", "webm", "avi"];
 
 type Job =
   | { state: "idle" }
-  | { state: "running"; jobId: number; percent: number; speed: number | null }
+  | { state: "running"; jobId: number; percent: number; speed: number | null; stage: string }
   | { state: "done"; output: string; sizeBytes: number; report: ProbeReport | null }
   | { state: "failed"; message: string; cancelled: boolean };
 
@@ -47,6 +59,9 @@ export default function App() {
   const [method, setMethod] = useState<Method>("tail");
   const [retime, setRetime] = useState(2);
   const [ratePatch, setRatePatch] = useState<RatePatch>("mvhd");
+  const [enh, setEnh] = useState<EnhanceOptions>(DEFAULT_ENHANCE);
+  const setEnhField = <K extends keyof EnhanceOptions>(key: K, value: EnhanceOptions[K]) =>
+    setEnh((prev) => ({ ...prev, [key]: value }));
 
   useEffect(() => {
     gpuInfo().then(setGpu).catch(() => setGpu({ name: null, driver: null, memoryMb: null, isRtx: false, nvenc: [], note: "Не удалось определить видеокарту." }));
@@ -88,7 +103,7 @@ export default function App() {
     () =>
       onJobEvents({
         progress: (p) => {
-          if (p.jobId === jobIdRef.current) setJob({ state: "running", jobId: p.jobId, percent: p.percent, speed: p.speed });
+          if (p.jobId === jobIdRef.current) setJob({ state: "running", jobId: p.jobId, percent: p.percent, speed: p.speed, stage: p.stage });
         },
         done: async (d) => {
           if (d.jobId !== jobIdRef.current) return;
@@ -123,15 +138,18 @@ export default function App() {
         retimeFactor: method === "retime" ? retime : 1,
         ratePatch: method === "retime" ? ratePatch : "none",
         audioTail: method === "tail",
-      });
+      }, enh);
       jobIdRef.current = jobId;
-      setJob({ state: "running", jobId, percent: 0, speed: null });
+      setJob({ state: "running", jobId, percent: 0, speed: null, stage: "Запуск…" });
     } catch (e) {
       setJob({ state: "failed", message: String(e), cancelled: false });
     }
   }
 
   const running = job.state === "running";
+  const canEncode = !!gpu && gpu.nvenc.includes("h264");
+  const outSize = report?.video ? targetSize(report.video.width, report.video.height, enh.shortSide) : null;
+  const outFps = report?.video ? (enh.fps === "keep" ? report.video.fps : Math.max(report.video.fps, 60)) : 0;
 
   return (
     <div className="shell">
@@ -178,7 +196,7 @@ export default function App() {
                 <div className="fill" style={{ width: `${job.percent}%` }} />
               </div>
               <div className="row">
-                <span>Ремукс · копирование потоков</span>
+                <span>{job.stage}</span>
                 <span>
                   {job.percent.toFixed(0)}%{job.speed ? ` · ${job.speed.toFixed(1)}×` : ""}
                 </span>
@@ -208,14 +226,70 @@ export default function App() {
         </main>
 
         <aside className="panel" aria-label="Параметры">
-          <h4>Режим</h4>
+          <h4>Шаг 1 · Видео</h4>
           <div className="seg" role="tablist">
-            <button role="tab" aria-selected="true" className="on">Ремукс</button>
-            <button role="tab" aria-selected="false" disabled title="Будет в фазе 2">NVENC</button>
+            <button role="tab" aria-selected={!enh.enabled} className={enh.enabled ? "" : "on"} onClick={() => setEnhField("enabled", false)} disabled={running}>Без изменений</button>
+            <button role="tab" aria-selected={enh.enabled} className={enh.enabled ? "on" : ""} onClick={() => setEnhField("enabled", true)} disabled={running || !canEncode} title={canEncode ? undefined : "NVENC недоступен на этом компьютере"}>Улучшение</button>
           </div>
-          <p className="hint">Кадры не перекодируются: меняются только контейнер и метаданные. Качество не теряется, занимает секунды.</p>
+          {!enh.enabled && <p className="hint">Кадры не перекодируются, качество не теряется, занимает секунды.</p>}
+          {enh.enabled && (
+            <>
+              <p className="hint">
+                Видео обрабатывается на видеокарте и кодируется заново через NVENC.
+                {report?.video && outSize ? ` Итог: ${outSize[0]}×${outSize[1]}, ${fmtFps(outFps)} fps.` : ""}
+              </p>
+              <div className="field">
+                <label htmlFor="shortSide">Разрешение</label>
+                <select id="shortSide" value={enh.shortSide} onChange={(e) => setEnhField("shortSide", Number(e.target.value))} disabled={running}>
+                  <option value={0}>Как в исходнике</option>
+                  <option value={1080}>1080p</option>
+                  <option value={1440}>1440p</option>
+                  <option value={2160}>4K</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="upscaler">Алгоритм масштабирования</label>
+                <select id="upscaler" value={enh.upscaler} onChange={(e) => setEnhField("upscaler", e.target.value as EnhanceOptions["upscaler"])} disabled={running}>
+                  <option value="sharp">Резкий (для чистых исходников)</option>
+                  <option value="smooth">Мягкий (прячет артефакты сжатия)</option>
+                  <option value="fast">Быстрый</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="fps">Частота кадров</label>
+                <select id="fps" value={enh.fps} onChange={(e) => setEnhField("fps", e.target.value as EnhanceOptions["fps"])} disabled={running}>
+                  <option value="keep">Как в исходнике</option>
+                  <option value="blend">60 fps, смешивание кадров (быстро)</option>
+                  <option value="motion">60 fps, по движению (медленно)</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="denoise">Шумоподавление: {LEVELS[enh.denoise]}</label>
+                <input id="denoise" type="range" min={0} max={3} step={1} value={enh.denoise} onChange={(e) => setEnhField("denoise", Number(e.target.value))} disabled={running} />
+              </div>
+              <div className="field">
+                <label htmlFor="sharpen">Резкость: {LEVELS[enh.sharpen]}</label>
+                <input id="sharpen" type="range" min={0} max={3} step={1} value={enh.sharpen} onChange={(e) => setEnhField("sharpen", Number(e.target.value))} disabled={running} />
+              </div>
+              <label className="check">
+                <input id="deband" type="checkbox" checked={enh.deband} onChange={(e) => setEnhField("deband", e.target.checked)} disabled={running} />
+                Убирать полосы на градиентах
+              </label>
+              <div className="field">
+                <label htmlFor="codec">Кодек</label>
+                <select id="codec" value={enh.codec} onChange={(e) => setEnhField("codec", e.target.value as EnhanceOptions["codec"])} disabled={running}>
+                  <option value="h264">H.264 (рекомендуется)</option>
+                  <option value="hevc" disabled={gpu ? !gpu.nvenc.includes("hevc") : false}>HEVC</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="bitrate">Битрейт: <span className="mono">{enh.bitrateMbps}</span> Мбит/с</label>
+                <input id="bitrate" type="range" min={8} max={60} step={1} value={enh.bitrateMbps} onChange={(e) => setEnhField("bitrateMbps", Number(e.target.value))} disabled={running} />
+              </div>
+            </>
+          )}
 
-          <h4>Способ</h4>
+          <h4>Шаг 2 · Патч</h4>
           <div className="field">
             <select id="method" aria-label="Способ обработки" value={method} onChange={(e) => setMethod(e.target.value as Method)} disabled={running}>
               <option value="tail">Патч хвоста аудио (как на сайте сейчас)</option>
@@ -272,7 +346,7 @@ export default function App() {
           )}
 
           {report && !report.remuxOk && (
-            <p className="hint warn">Ремукс исправит не всё: этому файлу нужно перекодирование. Режим NVENC появится в следующей версии.</p>
+            !enh.enabled && <p className="hint warn">Этому файлу нужно перекодирование: включите «Улучшение» в шаге 1.</p>
           )}
 
           <span className="sp" />

@@ -60,6 +60,7 @@ export interface JobProgress {
   jobId: number;
   percent: number;
   speed: number | null;
+  stage: string;
 }
 export interface JobDone {
   jobId: number;
@@ -83,8 +84,35 @@ export interface RemuxOptions {
   /** Overwrite the last audio frames the way the reference web optimizer does. */
   audioTail: boolean;
 }
-export const startRemux = (path: string, options: RemuxOptions) =>
-  invoke<{ jobId: number; output: string }>("start_remux", { path, options });
+/** Step 1: GPU enhancement and NVENC encode, done before the remux and patch. */
+export interface EnhanceOptions {
+  enabled: boolean;
+  /** Target short side in pixels; 0 keeps the source size. */
+  shortSide: number;
+  upscaler: "sharp" | "smooth" | "fast";
+  /** 0 = off … 3 = strong */
+  denoise: number;
+  /** 0 = off … 3 = strong */
+  sharpen: number;
+  deband: boolean;
+  fps: "keep" | "blend" | "motion";
+  codec: "h264" | "hevc";
+  bitrateMbps: number;
+}
+export const DEFAULT_ENHANCE: EnhanceOptions = {
+  enabled: false,
+  shortSide: 0,
+  upscaler: "sharp",
+  denoise: 0,
+  sharpen: 0,
+  deband: false,
+  fps: "keep",
+  codec: "h264",
+  bitrateMbps: 20,
+};
+
+export const startRemux = (path: string, options: RemuxOptions, enhance: EnhanceOptions) =>
+  invoke<{ jobId: number; output: string }>("start_remux", { path, options, enhance });
 export const cancelJob = (jobId: number) => invoke<boolean>("cancel_job", { jobId });
 
 export function onJobEvents(handlers: {

@@ -5,7 +5,7 @@
 //! - BT.709 colour tags written into the bitstream when the source has none
 //! - `moov` atom moved to the front (`+faststart`)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
@@ -46,19 +46,28 @@ pub fn post_process(output: &Path, opts: Options) -> Result<(), String> {
     }
     Ok(())
 }
+use crate::enhance::{self, EnhanceOptions};
 use crate::tools;
 
 /// Running ffmpeg processes by job id, so they can be cancelled.
 #[derive(Default, Clone)]
-pub struct Jobs(Arc<Mutex<HashMap<u64, Child>>>);
+pub struct Jobs {
+    children: Arc<Mutex<HashMap<u64, Child>>>,
+    /// Jobs the user cancelled: the next stage must not start.
+    cancelled: Arc<Mutex<HashSet<u64>>>,
+}
 
 impl Jobs {
     pub fn cancel(&self, id: u64) -> bool {
-        let mut map = self.0.lock().unwrap();
-        match map.get_mut(&id) {
+        self.cancelled.lock().unwrap().insert(id);
+        match self.children.lock().unwrap().get_mut(&id) {
             Some(child) => child.kill().is_ok(),
-            None => false,
+            None => true,
         }
+    }
+
+    fn is_cancelled(&self, id: u64) -> bool {
+        self.cancelled.lock().unwrap().contains(&id)
     }
 }
 
@@ -68,6 +77,7 @@ pub struct Progress {
     pub job_id: u64,
     pub percent: f64,
     pub speed: Option<f64>,
+    pub stage: &'static str,
 }
 
 #[derive(Clone, Serialize)]
@@ -156,75 +166,124 @@ pub fn parse_progress_line(line: &str, out_time: &mut Option<f64>, speed: &mut O
     }
 }
 
-/// Starts the remux in a background thread; reports via `job-progress`, `job-done`, `job-failed` events.
-pub fn start(app: AppHandle, jobs: Jobs, job_id: u64, report: ProbeReport, opts: Options) -> Result<String, String> {
-    let ffmpeg = tools::ffmpeg()?;
-    let output = output_path(Path::new(&report.path));
-    let args = build_args(&report, &output, opts);
+/// Why a stage stopped.
+enum StageError {
+    Cancelled,
+    Failed(String),
+}
 
+/// Runs one ffmpeg process to completion, forwarding progress mapped into `from..to` percent.
+#[allow(clippy::too_many_arguments)]
+fn run_stage(
+    app: &AppHandle,
+    jobs: &Jobs,
+    job_id: u64,
+    stage: &'static str,
+    args: &[String],
+    duration: f64,
+    from: f64,
+    to: f64,
+) -> Result<(), StageError> {
+    if jobs.is_cancelled(job_id) {
+        return Err(StageError::Cancelled);
+    }
+    let ffmpeg = tools::ffmpeg().map_err(StageError::Failed)?;
     let mut child = tools::command(ffmpeg)
-        .args(&args)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Не удалось запустить ffmpeg: {e}"))?;
-
+        .map_err(|e| StageError::Failed(format!("Не удалось запустить ffmpeg: {e}")))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
-    jobs.0.lock().unwrap().insert(job_id, child);
+    jobs.children.lock().unwrap().insert(job_id, child);
 
+    let err_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+
+    let (mut out_time, mut speed) = (None, None);
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        parse_progress_line(&line, &mut out_time, &mut speed);
+        if line.starts_with("progress=") {
+            let done = match (out_time, duration > 0.0) {
+                (Some(t), true) => (t / duration).clamp(0.0, 1.0),
+                _ => 0.0,
+            };
+            let percent = from + (to - from) * done;
+            let _ = app.emit("job-progress", Progress { job_id, percent, speed, stage });
+        }
+    }
+
+    let status = jobs.children.lock().unwrap().remove(&job_id).map(|mut c| c.wait());
+    let stderr_text = err_reader.join().unwrap_or_default();
+    match status {
+        Some(Ok(s)) if s.success() => Ok(()),
+        _ if jobs.is_cancelled(job_id) => Err(StageError::Cancelled),
+        _ => {
+            let tail: Vec<&str> = stderr_text.lines().rev().take(5).collect();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            Err(StageError::Failed(format!("ffmpeg завершился с ошибкой: {}", tail.join(" | "))))
+        }
+    }
+}
+
+/// `clip_tiktok.mp4` → `clip_tiktok.stage1.mp4` (intermediate file of the enhance stage).
+pub fn stage1_path(output: &Path) -> PathBuf {
+    output.with_extension("stage1.mp4")
+}
+
+/// Starts the job in a background thread; reports via `job-progress`, `job-done`, `job-failed`.
+///
+/// Stages: optional enhancement + NVENC encode, then the remux, then the in-place
+/// patches. Whatever is patched is always the final file.
+pub fn start(
+    app: AppHandle,
+    jobs: Jobs,
+    job_id: u64,
+    report: ProbeReport,
+    opts: Options,
+    enh: EnhanceOptions,
+) -> Result<String, String> {
+    tools::ffmpeg()?;
+    let output = output_path(Path::new(&report.path));
     let out_str = output.to_string_lossy().into_owned();
-    let duration = report.duration_s * opts.factor() as f64;
     let ret = out_str.clone();
 
     std::thread::spawn(move || {
-        let err_reader = std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = stderr.read_to_string(&mut s);
-            s
-        });
-
-        let (mut out_time, mut speed) = (None, None);
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            parse_progress_line(&line, &mut out_time, &mut speed);
-            if line.starts_with("progress=") {
-                let percent = match (out_time, duration > 0.0) {
-                    (Some(t), true) => (t / duration * 100.0).clamp(0.0, 100.0),
-                    _ => 0.0,
-                };
-                let _ = app.emit("job-progress", Progress { job_id, percent, speed });
+        let stage1 = stage1_path(&output);
+        let result = (|| -> Result<(), StageError> {
+            let mut source = report.clone();
+            let mut remux_from = 0.0;
+            if enh.enabled {
+                let args = enhance::build_args(&report, &stage1, &enh);
+                run_stage(&app, &jobs, job_id, "Улучшение и кодирование", &args, report.duration_s, 0.0, 95.0)?;
+                source = crate::probe::probe(&stage1.to_string_lossy()).map_err(StageError::Failed)?;
+                remux_from = 95.0;
             }
-        }
+            let args = build_args(&source, &output, opts);
+            let duration = source.duration_s * opts.factor() as f64;
+            run_stage(&app, &jobs, job_id, "Ремукс и патч", &args, duration, remux_from, 100.0)?;
+            if jobs.is_cancelled(job_id) {
+                return Err(StageError::Cancelled);
+            }
+            post_process(&output, opts).map_err(StageError::Failed)
+        })();
 
-        let status = jobs.0.lock().unwrap().remove(&job_id).map(|mut c| c.wait());
-        let stderr_text = err_reader.join().unwrap_or_default();
-
-        // The header patch runs only after ffmpeg has closed the file.
-        let patch_err = match &status {
-            Some(Ok(s)) if s.success() => post_process(Path::new(&out_str), opts).err(),
-            _ => None,
-        };
-        if let Some(message) = patch_err {
-            let _ = std::fs::remove_file(&out_str);
-            let _ = app.emit("job-failed", Failed { job_id, message, cancelled: false });
-            return;
-        }
-
-        match status {
-            Some(Ok(s)) if s.success() => {
+        let _ = std::fs::remove_file(&stage1);
+        jobs.cancelled.lock().unwrap().remove(&job_id);
+        match result {
+            Ok(()) => {
                 let size_bytes = std::fs::metadata(&out_str).map(|m| m.len()).unwrap_or(0);
                 let _ = app.emit("job-done", Done { job_id, output: out_str, size_bytes });
             }
-            other => {
+            Err(e) => {
                 let _ = std::fs::remove_file(&out_str);
-                // A killed process exits with a non-zero code and no error text.
-                let cancelled = matches!(other, Some(Ok(_))) && stderr_text.trim().is_empty();
-                let message = if cancelled {
-                    "Отменено".to_string()
-                } else {
-                    let tail: Vec<&str> = stderr_text.lines().rev().take(5).collect();
-                    let tail: Vec<&str> = tail.into_iter().rev().collect();
-                    format!("ffmpeg завершился с ошибкой: {}", tail.join(" | "))
+                let (message, cancelled) = match e {
+                    StageError::Cancelled => ("Отменено".to_string(), true),
+                    StageError::Failed(m) => (m, false),
                 };
                 let _ = app.emit("job-failed", Failed { job_id, message, cancelled });
             }
