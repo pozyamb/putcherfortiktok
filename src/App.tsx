@@ -269,6 +269,17 @@ export default function App() {
     ? Math.max(1, Math.ceil((report.video.width * report.video.height * 0.65 * report.durationS * (report.video.fps + Math.max(report.video.fps, enh.fpsTarget))) / 1e9))
     : 0;
   const outFps = report?.video ? (enh.fps === "keep" ? report.video.fps : Math.max(report.video.fps, enh.fpsTarget)) : 0;
+  // Motion blur: RIFE makes blurSteps frames per output frame. Measured on an RTX 5060:
+  // about 0.0127 s per generated frame per megapixel. The disk holds the source frames
+  // plus two batches of about 1200 generated frames.
+  const blurOn = enh.motionBlur > 0;
+  const mpix = report?.video ? (report.video.width * report.video.height) / 1e6 : 0;
+  const blurMinutes = report?.video && blurOn
+    ? Math.max(1, Math.round((report.durationS * outFps * enh.blurSteps * mpix * 0.0127) / 60))
+    : 0;
+  const blurDiskGb = report?.video && blurOn
+    ? Math.max(1, Math.ceil((mpix * 1e6 * 0.65 * (report.durationS * report.video.fps + 3600)) / 1e9))
+    : 0;
 
   return (
     <div className="shell">
@@ -445,7 +456,7 @@ export default function App() {
                   <option value="120">120 fps</option>
                 </select>
               </div>
-              {enh.fps !== "keep" && (
+              {enh.fps !== "keep" && !blurOn && (
                 <div className="field">
                   <label htmlFor="fpsMode">Как достраивать кадры</label>
                   <select id="fpsMode" value={enh.fps} onChange={(e) => setEnhField("fps", e.target.value as EnhanceOptions["fps"])} disabled={running}>
@@ -455,11 +466,39 @@ export default function App() {
                   </select>
                 </div>
               )}
-              {enh.fps === "rife" && (
+              {enh.fps === "rife" && !blurOn && (
                 <p className="hint warn">
                   RIFE временно сохраняет каждый кадр на диск рядом с роликом
                   {rifeDiskGb ? `: для этого файла нужно около ${rifeDiskGb} ГБ свободного места` : ""}. После обработки кадры удаляются.
                 </p>
+              )}
+              <div className="field">
+                <label htmlFor="motionBlur">
+                  Размытие движения: {blurOn ? <span className="mono">{enh.motionBlur} %</span> : "выкл."}
+                </label>
+                <input id="motionBlur" type="range" min={0} max={300} step={10} value={enh.motionBlur} onChange={(e) => setEnhField("motionBlur", Number(e.target.value))} disabled={running || !rife} />
+              </div>
+              {!rife && <p className="hint">Размытие движения недоступно: не найдена нейросеть RIFE.</p>}
+              {blurOn && (
+                <>
+                  <p className="hint">
+                    Шлейф за движущимися объектами и при поворотах камеры, неподвижное остаётся чётким.
+                    100 % — естественное размытие, 200–300 % — сильный шлейф, как в эдитах.
+                  </p>
+                  <div className="field">
+                    <label htmlFor="blurSteps">Плавность размытия</label>
+                    <select id="blurSteps" value={enh.blurSteps} onChange={(e) => setEnhField("blurSteps", Number(e.target.value))} disabled={running}>
+                      <option value={8}>Высокая (медленнее)</option>
+                      <option value={4}>Обычная (вдвое быстрее, на резких движениях шлейф ступенчатый)</option>
+                    </select>
+                  </div>
+                  <p className="hint warn">
+                    Размытие долгое: кадры достраивает нейросеть RIFE
+                    {blurMinutes ? `, для этого файла примерно ${blurMinutes} мин (зависит от видеокарты)` : ""}.
+                    Временные кадры занимают на диске рядом с роликом
+                    {blurDiskGb ? ` около ${blurDiskGb} ГБ` : " много места"} и удаляются после обработки.
+                  </p>
+                </>
               )}
               <div className="field">
                 <label htmlFor="denoise">Шумоподавление: {LEVELS[enh.denoise]}</label>

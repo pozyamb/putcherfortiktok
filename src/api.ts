@@ -101,6 +101,10 @@ export interface EnhanceOptions {
   fpsTarget: number;
   codec: "h264" | "hevc";
   bitrateMbps: number;
+  /** Motion blur in percent of one frame interval (100 = 360° shutter, max 300); 0 = off. */
+  motionBlur: number;
+  /** Intermediate frames RIFE makes per output frame for the blur: 4 or 8. */
+  blurSteps: number;
 }
 export const DEFAULT_ENHANCE: EnhanceOptions = {
   enabled: false,
@@ -113,6 +117,8 @@ export const DEFAULT_ENHANCE: EnhanceOptions = {
   fpsTarget: 60,
   codec: "h264",
   bitrateMbps: 20,
+  motionBlur: 0,
+  blurSteps: 8,
 };
 
 export const startRemux = (path: string, options: RemuxOptions, enhance: EnhanceOptions) =>
