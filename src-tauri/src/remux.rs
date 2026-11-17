@@ -26,7 +26,7 @@ pub struct Options {
     pub retime_factor: u32,
     /// EXPERIMENTAL: playback-rate hint written into the header after a retime.
     pub rate_patch: RatePatch,
-    /// Overwrite the last audio frames the way the reference web optimizer does.
+    /// Method 1 of the patch: overwrite the last audio frames of the finished file.
     pub audio_tail: bool,
 }
 
@@ -125,7 +125,7 @@ pub fn build_args(report: &ProbeReport, output: &Path, opts: Options) -> Vec<Str
     }
 
     // Tag BT.709 in the bitstream itself; container-level flags are ignored with stream copy.
-    // Skipped with the audio tail patch: the reference file had an untouched video bitstream.
+    // Skipped with the audio tail patch: it needs the video bitstream untouched.
     if let (Some(v), false) = (&report.video, opts.audio_tail) {
         if v.color_primaries.is_none() && v.bit_depth == 8 {
             let bsf = match v.codec.as_str() {
@@ -143,8 +143,7 @@ pub fn build_args(report: &ProbeReport, output: &Path, opts: Options) -> Vec<Str
     }
 
     if opts.audio_tail {
-        // Match the reference file: track metadata (language, handler names) kept,
-        // movie timescale 1000 as written by the ffmpeg build it was made with.
+        // Track metadata (language, handler names) kept, movie timescale 1000.
         a.extend(["-movie_timescale", "1000"].map(String::from));
     } else {
         a.extend(["-map_metadata", "-1", "-map_chapters", "-1"].map(String::from));
@@ -172,10 +171,24 @@ enum StageError {
     Failed(String),
 }
 
+/// Progress sink of a stage: (percent of the whole job, ffmpeg speed, stage name).
+pub type Emit<'a> = &'a dyn Fn(f64, Option<f64>, &'static str);
+
+/// The motion blur stage on its own, without the app window (tests, command line).
+/// `frames` is the temporary folder; `output` gets the encoded, not yet patched video.
+pub fn blur_to_file(report: &ProbeReport, enh: &EnhanceOptions, frames: &Path, output: &Path, emit: Emit) -> Result<(), String> {
+    let result = run_blur(emit, &Jobs::default(), 0, report, enh, frames, output);
+    let _ = std::fs::remove_dir_all(frames);
+    result.map_err(|e| match e {
+        StageError::Cancelled => "cancelled".to_string(),
+        StageError::Failed(m) => m,
+    })
+}
+
 /// Runs one ffmpeg process to completion, forwarding progress mapped into `from..to` percent.
 #[allow(clippy::too_many_arguments)]
 fn run_stage(
-    app: &AppHandle,
+    emit: Emit,
     jobs: &Jobs,
     job_id: u64,
     stage: &'static str,
@@ -213,7 +226,7 @@ fn run_stage(
                 _ => 0.0,
             };
             let percent = from + (to - from) * done;
-            let _ = app.emit("job-progress", Progress { job_id, percent, speed, stage });
+            emit(percent, speed, stage);
         }
     }
 
@@ -234,9 +247,10 @@ fn run_stage(
 /// which is the only progress signal it gives.
 #[allow(clippy::too_many_arguments)]
 fn run_rife(
-    app: &AppHandle,
+    emit: Emit,
     jobs: &Jobs,
     job_id: u64,
+    stage: &'static str,
     exe: &Path,
     args: &[String],
     frames_out: u64,
@@ -255,7 +269,6 @@ fn run_rife(
     let stderr = child.stderr.take().expect("piped stderr");
     jobs.children.lock().unwrap().insert(job_id, child);
 
-    let stage = "Достройка кадров (RIFE)";
     let mut done = 0u64;
     let mut tail: Vec<String> = Vec::new();
     let mut last_emit = std::time::Instant::now();
@@ -265,7 +278,7 @@ fn run_rife(
             if last_emit.elapsed().as_millis() >= 250 {
                 last_emit = std::time::Instant::now();
                 let part = (done as f64 / frames_out.max(1) as f64).clamp(0.0, 1.0);
-                let _ = app.emit("job-progress", Progress { job_id, percent: from + (to - from) * part, speed: None, stage });
+                emit(from + (to - from) * part, None, stage);
             }
         } else if !line.starts_with('[') {
             tail.push(line);
@@ -280,6 +293,162 @@ fn run_rife(
         Some(Ok(s)) if s.success() && done > 0 => Ok(()),
         _ if jobs.is_cancelled(job_id) => Err(StageError::Cancelled),
         _ => Err(StageError::Failed(format!("RIFE завершился с ошибкой: {}", tail.join(" | ")))),
+    }
+}
+
+/// Motion blur stage: source frames → RIFE in chunks → PNG stream into one encoder.
+///
+/// RIFE only interpolates between frames of one run, so each chunk also gets the
+/// first frame of the next chunk and its last `per_source` outputs are dropped:
+/// output `i` of a run sits at source position `i / per_source`, so the kept ones
+/// join the next chunk seamlessly. Frames are deleted as soon as they are sent,
+/// so the disk holds the source frames plus one chunk at a time.
+#[allow(clippy::too_many_arguments)]
+fn run_blur(
+    emit: Emit,
+    jobs: &Jobs,
+    job_id: u64,
+    report: &ProbeReport,
+    enh: &EnhanceOptions,
+    frames: &Path,
+    stage1: &Path,
+) -> Result<(), StageError> {
+    use std::io::Write;
+
+    let (rife_exe, model) = tools::rife().ok_or_else(|| {
+        StageError::Failed("Для размытия движения нужен RIFE: положите rife-ncnn-vulkan в папку rife рядом с приложением.".into())
+    })?;
+    let io = |e: std::io::Error| StageError::Failed(format!("Ошибка временной папки: {e}"));
+    let (dir_src, dir_in) = (frames.join("src"), frames.join("in"));
+    let _ = std::fs::remove_dir_all(frames);
+    std::fs::create_dir_all(&dir_src).map_err(io)?;
+
+    let args = enhance::extract_frames_args(report, &dir_src);
+    run_stage(emit, jobs, job_id, "Извлечение кадров", &args, report.duration_s, 0.0, 10.0)?;
+    let total = std::fs::read_dir(&dir_src).map(|d| d.count() as u64).unwrap_or(0);
+    if total < 2 {
+        return Err(StageError::Failed("Не удалось извлечь кадры из видео.".into()));
+    }
+    let sfps = report.video.as_ref().map(|v| v.fps).unwrap_or(30.0);
+    let plan = enhance::blur_plan(sfps, enh);
+    let chunk = enhance::blur_chunk(&plan);
+    let per = plan.per_source as u64;
+    let gpu = tools::rife_gpu_index(&rife_exe);
+    let name = |dir: &Path, n: u64| dir.join(format!("{n:08}.png"));
+
+    let ffmpeg = tools::ffmpeg().map_err(StageError::Failed)?;
+    let args = enhance::build_args_blur(report, &plan, stage1, enh);
+    let mut encoder = tools::command(ffmpeg)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| StageError::Failed(format!("Не удалось запустить ffmpeg: {e}")))?;
+    let stdin = encoder.stdin.take().expect("piped stdin");
+    let mut stderr = encoder.stderr.take().expect("piped stderr");
+    let err_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+
+    // A writer thread streams finished chunks into the encoder while RIFE works on
+    // the next one. Two output folders take turns; `freed` says one was emptied.
+    // An empty `Failed` message means the encoder closed its input (it exited).
+    let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<(PathBuf, u64)>();
+    let (freed_tx, freed_rx) = std::sync::mpsc::channel::<()>();
+    let writer_jobs = jobs.clone();
+    let writer = std::thread::spawn(move || -> Result<(), StageError> {
+        let mut stdin = stdin;
+        for (dir, count) in chunk_rx {
+            for i in 1..=count {
+                if i % 64 == 0 && writer_jobs.is_cancelled(job_id) {
+                    return Err(StageError::Cancelled);
+                }
+                let bytes = std::fs::read(dir.join(format!("{i:08}.png")))
+                    .map_err(|e| StageError::Failed(format!("Ошибка временной папки: {e}")))?;
+                if stdin.write_all(&bytes).is_err() {
+                    return Err(StageError::Failed(String::new()));
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = freed_tx.send(());
+        }
+        Ok(())
+    });
+
+    let produced = (|| -> Result<(), StageError> {
+        let mut start = 1u64;
+        let mut turn = 0u64;
+        while start <= total {
+            if jobs.is_cancelled(job_id) {
+                return Err(StageError::Cancelled);
+            }
+            // From the third chunk on, wait until the writer has emptied this folder.
+            // If it stopped instead, its own result says why.
+            if turn >= 2 && freed_rx.recv().is_err() {
+                return Ok(());
+            }
+            let dir_out = frames.join(format!("out{}", turn % 2));
+            let end = (start + chunk - 1).min(total);
+            let count = end - start + 1;
+            let _ = std::fs::remove_dir_all(&dir_in);
+            let _ = std::fs::remove_dir_all(&dir_out);
+            std::fs::create_dir_all(&dir_in).map_err(io)?;
+            std::fs::create_dir_all(&dir_out).map_err(io)?;
+            for k in 0..count {
+                std::fs::rename(name(&dir_src, start + k), name(&dir_in, k + 1)).map_err(io)?;
+            }
+            let rife_out = if end < total {
+                let (from, to) = (name(&dir_src, end + 1), name(&dir_in, count + 1));
+                if std::fs::hard_link(&from, &to).is_err() {
+                    std::fs::copy(&from, &to).map_err(io)?;
+                }
+                (count + 1) * per
+            } else {
+                count * per
+            };
+
+            let from = 10.0 + 85.0 * (start - 1) as f64 / total as f64;
+            let to = 10.0 + 85.0 * end as f64 / total as f64;
+            let args = enhance::rife_args(&dir_in, &dir_out, rife_out, &model, gpu);
+            run_rife(emit, jobs, job_id, "Размытие движения", &rife_exe, &args, rife_out, from, to)?;
+            if chunk_tx.send((dir_out, count * per)).is_err() {
+                return Ok(());
+            }
+            start = end + 1;
+            turn += 1;
+        }
+        Ok(())
+    })();
+    drop(chunk_tx);
+    let written = writer
+        .join()
+        .unwrap_or_else(|_| Err(StageError::Failed("Сбой при передаче кадров кодировщику.".into())));
+
+    let failure = match (produced, written) {
+        (Ok(()), Ok(())) => None,
+        (Err(StageError::Cancelled), _) | (_, Err(StageError::Cancelled)) => Some(StageError::Cancelled),
+        (_, Err(StageError::Failed(m))) if m.is_empty() => None, // the encoder's exit status tells
+        (Err(e), _) | (_, Err(e)) => Some(e),
+    };
+    if let Some(e) = failure {
+        let _ = encoder.kill();
+        let _ = encoder.wait();
+        return Err(e);
+    }
+
+    // Only the encoder's flush is left here: a few seconds at most.
+    let status = encoder.wait();
+    let text = err_reader.join().unwrap_or_default();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        _ if jobs.is_cancelled(job_id) => Err(StageError::Cancelled),
+        _ => {
+            let tail: Vec<&str> = text.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect();
+            Err(StageError::Failed(format!("ffmpeg завершился с ошибкой: {}", tail.join(" | "))))
+        }
     }
 }
 
@@ -313,10 +482,19 @@ pub fn start(
     std::thread::spawn(move || {
         let stage1 = stage1_path(&output);
         let frames = frames_dir(&output);
+        let progress = |percent: f64, speed: Option<f64>, stage: &'static str| {
+            let _ = app.emit("job-progress", Progress { job_id, percent, speed, stage });
+        };
+        let emit: Emit = &progress;
         let result = (|| -> Result<(), StageError> {
             let mut source = report.clone();
             let mut remux_from = 0.0;
-            if enhance::uses_rife(&report, &enh) {
+            if enhance::uses_blur(&report, &enh) {
+                run_blur(emit, &jobs, job_id, &report, &enh, &frames, &stage1)?;
+                let _ = std::fs::remove_dir_all(&frames);
+                source = crate::probe::probe(&stage1.to_string_lossy()).map_err(StageError::Failed)?;
+                remux_from = 95.0;
+            } else if enhance::uses_rife(&report, &enh) {
                 let (rife_exe, model) = tools::rife().ok_or_else(|| {
                     StageError::Failed("RIFE не найден: положите rife-ncnn-vulkan в папку rife рядом с приложением.".into())
                 })?;
@@ -327,7 +505,7 @@ pub fn start(
                 std::fs::create_dir_all(&dir_out).map_err(io)?;
 
                 let args = enhance::extract_frames_args(&report, &dir_in);
-                run_stage(&app, &jobs, job_id, "Извлечение кадров", &args, report.duration_s, 0.0, 15.0)?;
+                run_stage(emit, &jobs, job_id, "Извлечение кадров", &args, report.duration_s, 0.0, 15.0)?;
                 let frames_in = std::fs::read_dir(&dir_in).map(|d| d.count() as u64).unwrap_or(0);
                 if frames_in < 2 {
                     return Err(StageError::Failed("Не удалось извлечь кадры из видео.".into()));
@@ -336,7 +514,7 @@ pub fn start(
                 let frames_out = enhance::rife_frame_count(frames_in, sfps, enh.fps_target);
                 let gpu = tools::rife_gpu_index(&rife_exe);
                 let args = enhance::rife_args(&dir_in, &dir_out, frames_out, &model, gpu);
-                run_rife(&app, &jobs, job_id, &rife_exe, &args, frames_out, 15.0, 65.0)?;
+                run_rife(emit, &jobs, job_id, "Достройка кадров (RIFE)", &rife_exe, &args, frames_out, 15.0, 65.0)?;
                 let _ = std::fs::remove_dir_all(&dir_in);
 
                 // Keep the clip length exact: frame rate = produced frames / source duration.
@@ -346,19 +524,19 @@ pub fn start(
                     enhance::fps_goal(enh.fps_target) as f64
                 };
                 let args = enhance::build_args_from_frames(&report, &dir_out, fps, &stage1, &enh);
-                run_stage(&app, &jobs, job_id, "Улучшение и кодирование", &args, report.duration_s, 65.0, 95.0)?;
+                run_stage(emit, &jobs, job_id, "Улучшение и кодирование", &args, report.duration_s, 65.0, 95.0)?;
                 let _ = std::fs::remove_dir_all(&frames);
                 source = crate::probe::probe(&stage1.to_string_lossy()).map_err(StageError::Failed)?;
                 remux_from = 95.0;
             } else if enh.enabled {
                 let args = enhance::build_args(&report, &stage1, &enh);
-                run_stage(&app, &jobs, job_id, "Улучшение и кодирование", &args, report.duration_s, 0.0, 95.0)?;
+                run_stage(emit, &jobs, job_id, "Улучшение и кодирование", &args, report.duration_s, 0.0, 95.0)?;
                 source = crate::probe::probe(&stage1.to_string_lossy()).map_err(StageError::Failed)?;
                 remux_from = 95.0;
             }
             let args = build_args(&source, &output, opts);
             let duration = source.duration_s * opts.factor() as f64;
-            run_stage(&app, &jobs, job_id, "Патч", &args, duration, remux_from, 100.0)?;
+            run_stage(emit, &jobs, job_id, "Патч", &args, duration, remux_from, 100.0)?;
             if jobs.is_cancelled(job_id) {
                 return Err(StageError::Cancelled);
             }

@@ -82,7 +82,7 @@ export interface RemuxOptions {
   retimeFactor: number;
   /** Experimental: playback-rate hint written into the header after a retime. */
   ratePatch: RatePatch;
-  /** Overwrite the last audio frames the way the reference web optimizer does. */
+  /** Method 1 of the patch: overwrite the last audio frames of the finished file. */
   audioTail: boolean;
 }
 /** Step 1: GPU enhancement and NVENC encode, done before the remux and patch. */
@@ -101,6 +101,12 @@ export interface EnhanceOptions {
   fpsTarget: number;
   codec: "h264" | "hevc";
   bitrateMbps: number;
+  /** Motion blur in percent of one frame interval (100 = 360° shutter, max 500); 0 = off. */
+  motionBlur: number;
+  /** Fading trail behind moving objects, in output frames (max 15); 0 = off. */
+  trailFrames: number;
+  /** Intermediate frames RIFE makes per output frame for the blur: 4 or 8. */
+  blurSteps: number;
 }
 export const DEFAULT_ENHANCE: EnhanceOptions = {
   enabled: false,
@@ -113,6 +119,9 @@ export const DEFAULT_ENHANCE: EnhanceOptions = {
   fpsTarget: 60,
   codec: "h264",
   bitrateMbps: 20,
+  motionBlur: 0,
+  trailFrames: 0,
+  blurSteps: 8,
 };
 
 export const startRemux = (path: string, options: RemuxOptions, enhance: EnhanceOptions) =>

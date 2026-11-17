@@ -183,13 +183,12 @@ pub fn patch_file(path: &Path, factor: u32, mode: RatePatch) -> Result<Patched, 
 
 // ---------- audio tail patch ----------
 
-/// Bytes found at the start of each of the last four audio frames in a file produced
-/// by the reference web optimizer (November 2026); the rest of every frame was zeros.
-/// The frame sizes and all sample tables were left untouched.
+/// Bytes written at the start of each of the last audio frames; the rest of every
+/// frame becomes zeros. Frame sizes and all sample tables stay untouched.
 pub const AUDIO_TAIL_PATTERN: [u8; 15] =
     [0xa0, 0xa0, 0x00, 0x40, 0x01, 0x28, 0x00, 0x64, 0x00, 0x00, 0x03, 0x50, 0x00, 0x00, 0x38];
 
-/// How many trailing audio frames the reference file had overwritten.
+/// How many trailing audio frames the patch overwrites.
 pub const AUDIO_TAIL_FRAMES: usize = 4;
 
 /// (file offset, size) of every sample of the first audio track, from a `moov` payload.

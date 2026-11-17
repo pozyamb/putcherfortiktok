@@ -63,7 +63,16 @@ fn main() -> Result<(), String> {
     let stage1 = remux::stage1_path(&output);
     if let Some(o) = &enh {
         let started = std::time::Instant::now();
-        if enhance::uses_rife(&source, o) {
+        if enhance::uses_blur(&source, o) {
+            let last = std::cell::Cell::new(-10.0);
+            let progress = |p: f64, _: Option<f64>, stage: &'static str| {
+                if p - last.get() >= 5.0 {
+                    last.set(p);
+                    eprintln!("{p:5.1}% {stage} ({:.0}s)", started.elapsed().as_secs_f64());
+                }
+            };
+            remux::blur_to_file(&source, o, &remux::frames_dir(&output), &stage1, &progress)?;
+        } else if enhance::uses_rife(&source, o) {
             let (rife_exe, model) = tools::rife().ok_or("RIFE not found")?;
             let frames = remux::frames_dir(&output);
             let (din, dout) = (frames.join("in"), frames.join("out"));
