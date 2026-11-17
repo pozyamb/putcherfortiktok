@@ -2,8 +2,8 @@
 //!
 //!   cargo run --example boxdiff -- original.mp4 processed.mp4
 //!
-//! Use it on a clip before and after an external "optimizer" to see exactly which
-//! header boxes it rewrites. Media data (`mdat`) is compared by size and hash only.
+//! Use it on a clip before and after processing to see exactly which header boxes
+//! changed. Media data (`mdat`) is compared by size and hash only.
 
 use std::collections::BTreeMap;
 use std::fs::File;

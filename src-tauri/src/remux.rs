@@ -26,7 +26,7 @@ pub struct Options {
     pub retime_factor: u32,
     /// EXPERIMENTAL: playback-rate hint written into the header after a retime.
     pub rate_patch: RatePatch,
-    /// Overwrite the last audio frames the way the reference web optimizer does.
+    /// Method 1 of the patch: overwrite the last audio frames of the finished file.
     pub audio_tail: bool,
 }
 
@@ -125,7 +125,7 @@ pub fn build_args(report: &ProbeReport, output: &Path, opts: Options) -> Vec<Str
     }
 
     // Tag BT.709 in the bitstream itself; container-level flags are ignored with stream copy.
-    // Skipped with the audio tail patch: the reference file had an untouched video bitstream.
+    // Skipped with the audio tail patch: it needs the video bitstream untouched.
     if let (Some(v), false) = (&report.video, opts.audio_tail) {
         if v.color_primaries.is_none() && v.bit_depth == 8 {
             let bsf = match v.codec.as_str() {
@@ -143,8 +143,7 @@ pub fn build_args(report: &ProbeReport, output: &Path, opts: Options) -> Vec<Str
     }
 
     if opts.audio_tail {
-        // Match the reference file: track metadata (language, handler names) kept,
-        // movie timescale 1000 as written by the ffmpeg build it was made with.
+        // Track metadata (language, handler names) kept, movie timescale 1000.
         a.extend(["-movie_timescale", "1000"].map(String::from));
     } else {
         a.extend(["-map_metadata", "-1", "-map_chapters", "-1"].map(String::from));

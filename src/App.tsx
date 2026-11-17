@@ -272,7 +272,7 @@ export default function App() {
   // Motion blur: RIFE makes blurSteps frames per output frame. Measured on an RTX 5060:
   // about 0.0127 s per generated frame per megapixel. The disk holds the source frames
   // plus two batches of about 1200 generated frames.
-  const blurOn = enh.motionBlur > 0;
+  const blurOn = enh.motionBlur > 0 || enh.trailFrames > 0;
   const mpix = report?.video ? (report.video.width * report.video.height) / 1e6 : 0;
   const blurMinutes = report?.video && blurOn
     ? Math.max(1, Math.round((report.durationS * outFps * enh.blurSteps * mpix * 0.0127) / 60))
@@ -474,16 +474,23 @@ export default function App() {
               )}
               <div className="field">
                 <label htmlFor="motionBlur">
-                  Размытие движения: {blurOn ? <span className="mono">{enh.motionBlur} %</span> : "выкл."}
+                  Размытие движения: {enh.motionBlur > 0 ? <span className="mono">{enh.motionBlur} %</span> : "выкл."}
                 </label>
-                <input id="motionBlur" type="range" min={0} max={300} step={10} value={enh.motionBlur} onChange={(e) => setEnhField("motionBlur", Number(e.target.value))} disabled={running || !rife} />
+                <input id="motionBlur" type="range" min={0} max={500} step={10} value={enh.motionBlur} onChange={(e) => setEnhField("motionBlur", Number(e.target.value))} disabled={running || !rife} />
               </div>
-              {!rife && <p className="hint">Размытие движения недоступно: не найдена нейросеть RIFE.</p>}
+              <div className="field">
+                <label htmlFor="trailFrames">
+                  Длина шлейфа: {enh.trailFrames > 0 ? <span className="mono">{framesLabel(enh.trailFrames)}</span> : "выкл."}
+                </label>
+                <input id="trailFrames" type="range" min={0} max={15} step={1} value={enh.trailFrames} onChange={(e) => setEnhField("trailFrames", Number(e.target.value))} disabled={running || !rife} />
+              </div>
+              {!rife && <p className="hint">Размытие движения и шлейф недоступны: не найдена нейросеть RIFE.</p>}
               {blurOn && (
                 <>
                   <p className="hint">
-                    Шлейф за движущимися объектами и при поворотах камеры, неподвижное остаётся чётким.
-                    100 % — естественное размытие, 200–300 % — сильный шлейф, как в эдитах.
+                    Размытие смазывает движущиеся объекты и повороты камеры, неподвижное остаётся чётким:
+                    100 % — естественно, 200–500 % — сильно, как в эдитах.
+                    Шлейф тянется за объектом и затухает к концу; сам объект при этом остаётся различим.
                   </p>
                   <div className="field">
                     <label htmlFor="blurSteps">Плавность размытия</label>
@@ -584,6 +591,13 @@ export default function App() {
 }
 
 const fmtFps = (f: number) => f.toFixed(2).replace(/\.?0+$/, "");
+
+/** 1 кадр, 2 кадра, 5 кадров, 11 кадров, 21 кадр. */
+function framesLabel(n: number) {
+  const d = n % 10, h = n % 100;
+  const word = d === 1 && h !== 11 ? "кадр" : d >= 2 && d <= 4 && (h < 12 || h > 14) ? "кадра" : "кадров";
+  return `${n} ${word}`;
+}
 
 function GpuBadge({ gpu }: { gpu: GpuInfo | null }) {
   if (!gpu) return <span className="gpu muted">Определяю видеокарту…</span>;

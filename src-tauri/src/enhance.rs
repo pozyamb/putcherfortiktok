@@ -63,11 +63,16 @@ pub struct EnhanceOptions {
     pub codec: Codec,
     pub bitrate_mbps: u32,
     /// Motion blur strength in percent of one output frame interval
-    /// (100 = 360° shutter, 300 = maximum); 0 = off.
+    /// (100 = 360° shutter, 500 = maximum); 0 = off.
     pub motion_blur: u32,
+    /// Fading trail behind moving objects, in output frames (0 = off, 15 = maximum).
+    pub trail_frames: u32,
     /// Intermediate frames RIFE makes per output frame for the blur: 4 or 8.
     pub blur_steps: u32,
 }
+
+pub const MAX_BLUR_PERCENT: u32 = 500;
+pub const MAX_TRAIL_FRAMES: u32 = 15;
 
 impl Default for EnhanceOptions {
     fn default() -> Self {
@@ -83,6 +88,7 @@ impl Default for EnhanceOptions {
             codec: Codec::H264,
             bitrate_mbps: 20,
             motion_blur: 0,
+            trail_frames: 0,
             blur_steps: 8,
         }
     }
@@ -90,19 +96,23 @@ impl Default for EnhanceOptions {
 
 /// How the motion blur is made: RIFE renders `per_source` frames for every source
 /// frame (`sub_fps` in total), `mix` consecutive ones are averaged, centred on the
-/// output frame's moment, and every result at `out_fps` is kept.
+/// output frame's moment, and every result at `out_fps` is kept. With a trail, the
+/// last `trail` one-frame slices (`slice` RIFE frames each) are added behind it,
+/// fading with age.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlurPlan {
     pub out_fps: f64,
     pub per_source: u32,
     pub sub_fps: f64,
     pub mix: u32,
+    pub slice: u32,
+    pub trail: u32,
 }
 
-/// True when this job gets motion blur.
+/// True when this job gets motion blur or a trail.
 pub fn uses_blur(report: &ProbeReport, o: &EnhanceOptions) -> bool {
     let sfps = report.video.as_ref().map(|v| v.fps).unwrap_or(0.0);
-    o.enabled && o.motion_blur > 0 && sfps > 0.0
+    o.enabled && (o.motion_blur > 0 || o.trail_frames > 0) && sfps > 0.0
 }
 
 pub fn blur_plan(source_fps: f64, o: &EnhanceOptions) -> BlurPlan {
@@ -111,22 +121,47 @@ pub fn blur_plan(source_fps: f64, o: &EnhanceOptions) -> BlurPlan {
     let per_source = ((out_fps * steps / source_fps).round() as u32).max(1);
     let sub_fps = source_fps * per_source as f64;
     let per_out = sub_fps / out_fps;
-    let mix = ((o.motion_blur.min(300) as f64 / 100.0 * per_out).round() as u32).max(1);
-    BlurPlan { out_fps, per_source, sub_fps, mix }
+    let strength = o.motion_blur.min(MAX_BLUR_PERCENT) as f64 / 100.0;
+    let mix = ((strength * per_out).round() as u32).max(1);
+    let slice = (per_out.round() as u32).max(1);
+    BlurPlan { out_fps, per_source, sub_fps, mix, slice, trail: o.trail_frames.min(MAX_TRAIL_FRAMES) }
 }
 
-/// Filters that turn the RIFE frames into blurred frames at the output rate.
+/// Average of `n` consecutive RIFE frames, centred on each output frame's moment.
 /// tmix averages the current frame with the ones before it; dropping the first
-/// half-window moves each average back to the middle of its time span, and as
-/// many copies of the last frame at the end keep the frame count exact.
-pub fn blur_filter(p: &BlurPlan) -> String {
-    let mut f = format!("tmix=frames={}", p.mix);
-    let skip = (p.mix - 1) / 2;
+/// half-window moves each average back to the middle of its time span, and as many
+/// copies of the last frame at the end keep the frame count exact. Equal weights
+/// keep tmix on its fast running-sum path.
+fn centred_average(n: u32, out_fps: f64) -> String {
+    let mut f = format!("tmix=frames={n}");
+    let skip = (n - 1) / 2;
     if skip > 0 {
         f.push_str(&format!(",trim=start_frame={skip},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop={skip}"));
     }
-    f.push_str(&format!(",fps={}", p.out_fps));
+    f.push_str(&format!(",fps={out_fps}"));
     f
+}
+
+/// Filters that turn the RIFE frames into blurred frames at the output rate.
+///
+/// The trail is built on a second branch at the output rate, where weighted
+/// averaging is cheap: one-frame slices (360° blur each, so the trail has no gaps),
+/// the last `trail` of them weighted 1 … n from oldest to newest and the current one
+/// 0, then mixed half and half with the blurred frame: however long the trail, the
+/// object itself keeps half its strength.
+pub fn blur_filter(p: &BlurPlan) -> String {
+    let main = centred_average(p.mix, p.out_fps);
+    if p.trail == 0 {
+        return main;
+    }
+    let n = p.trail;
+    let weights: Vec<String> = (1..=n).map(|i| i.to_string()).chain(["0".into()]).collect();
+    format!(
+        "split[bm][bs];[bm]{main}[bmain];[bs]{slices},tmix=frames={frames}:weights='{w}'[btrail];[bmain][btrail]mix=inputs=2:weights='1 1'",
+        slices = centred_average(p.slice, p.out_fps),
+        frames = n + 1,
+        w = weights.join(" "),
+    )
 }
 
 /// Source frames per RIFE run, so that one run makes about 1200 frames on disk.
