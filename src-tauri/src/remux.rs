@@ -171,6 +171,14 @@ enum StageError {
     Failed(String),
 }
 
+/// Everything a process wrote, as text. Not `read_to_string`: that fails on output
+/// that is not valid UTF-8 (paths in the Windows code page) and keeps nothing.
+fn read_lossy(r: &mut impl Read) -> String {
+    let mut bytes = Vec::new();
+    let _ = r.read_to_end(&mut bytes);
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 /// Progress sink of a stage: (percent of the whole job, ffmpeg speed, stage name).
 pub type Emit<'a> = &'a dyn Fn(f64, Option<f64>, &'static str);
 
@@ -211,15 +219,13 @@ fn run_stage(
     let mut stderr = child.stderr.take().expect("piped stderr");
     jobs.children.lock().unwrap().insert(job_id, child);
 
-    let err_reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
-    });
+    let err_reader = std::thread::spawn(move || read_lossy(&mut stderr));
 
     let (mut out_time, mut speed) = (None, None);
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-        parse_progress_line(&line, &mut out_time, &mut speed);
+    for raw in BufReader::new(stdout).split(b'\n').map_while(Result::ok) {
+        let line = String::from_utf8_lossy(&raw);
+        let line = line.trim_end();
+        parse_progress_line(line, &mut out_time, &mut speed);
         if line.starts_with("progress=") {
             let done = match (out_time, duration > 0.0) {
                 (Some(t), true) => (t / duration).clamp(0.0, 1.0),
@@ -272,7 +278,11 @@ fn run_rife(
     let mut done = 0u64;
     let mut tail: Vec<String> = Vec::new();
     let mut last_emit = std::time::Instant::now();
-    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+    // Read bytes, not UTF-8 lines: RIFE prints frame paths in the Windows ANSI code
+    // page, so a Cyrillic folder name is not valid UTF-8, and `lines()` would stop at
+    // the first such line and count no finished frames.
+    for raw in BufReader::new(stderr).split(b'\n').map_while(Result::ok) {
+        let line = String::from_utf8_lossy(&raw).into_owned();
         if line.trim_end().ends_with("done") {
             done += 1;
             if last_emit.elapsed().as_millis() >= 250 {
@@ -292,7 +302,16 @@ fn run_rife(
     match status {
         Some(Ok(s)) if s.success() && done > 0 => Ok(()),
         _ if jobs.is_cancelled(job_id) => Err(StageError::Cancelled),
-        _ => Err(StageError::Failed(format!("RIFE завершился с ошибкой: {}", tail.join(" | ")))),
+        other => {
+            // A crash leaves no text on stderr: the exit code is then the only clue.
+            let code = match other {
+                Some(Ok(s)) => s.code().map(|c| format!("код 0x{:08X}", c as u32)).unwrap_or_else(|| "без кода".into()),
+                Some(Err(e)) => e.to_string(),
+                None => "процесс потерян".into(),
+            };
+            let details = if tail.is_empty() { String::new() } else { format!(": {}", tail.join(" | ")) };
+            Err(StageError::Failed(format!("RIFE завершился с ошибкой ({code}, кадров готово: {done} из {frames_out}){details}")))
+        }
     }
 }
 
@@ -347,11 +366,7 @@ fn run_blur(
         .map_err(|e| StageError::Failed(format!("Не удалось запустить ffmpeg: {e}")))?;
     let stdin = encoder.stdin.take().expect("piped stdin");
     let mut stderr = encoder.stderr.take().expect("piped stderr");
-    let err_reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
-    });
+    let err_reader = std::thread::spawn(move || read_lossy(&mut stderr));
 
     // A writer thread streams finished chunks into the encoder while RIFE works on
     // the next one. Two output folders take turns; `freed` says one was emptied.
@@ -391,7 +406,11 @@ fn run_blur(
                 return Ok(());
             }
             let dir_out = frames.join(format!("out{}", turn % 2));
-            let end = (start + chunk - 1).min(total);
+            let mut end = (start + chunk - 1).min(total);
+            if total - end == 1 {
+                // RIFE crashes on a folder with a single frame: never leave one for the last run.
+                end = total;
+            }
             let count = end - start + 1;
             let _ = std::fs::remove_dir_all(&dir_in);
             let _ = std::fs::remove_dir_all(&dir_out);
