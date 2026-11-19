@@ -151,3 +151,50 @@ fn blur_end_to_end() {
     assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "360");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// 151 frames at 30 fps in a Cyrillic folder: one full chunk of 150 and a single
+/// frame left over. RIFE crashes on a one-frame folder, so that frame must join the
+/// previous chunk; and its progress lines must be read although they are not UTF-8.
+#[test]
+fn blur_in_cyrillic_folder_with_one_frame_left_over() {
+    let (Ok(ffmpeg), Some(_)) = (tools::ffmpeg(), tools::rife()) else {
+        eprintln!("ffmpeg or RIFE not found, skipping");
+        return;
+    };
+    // A Cyrillic folder: RIFE then prints its paths in the ANSI code page, not UTF-8.
+    let dir = std::env::temp_dir().join(format!("размытие-151-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("sample.mp4");
+    let st = tools::command(&ffmpeg)
+        .args(["-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30",
+               "-frames:v", "151", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+        .arg(&input)
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let report = probe::probe(input.to_str().unwrap()).unwrap();
+    let enh = opts(r#"{"enabled":true,"motionBlur":100,"blurSteps":8,"bitrateMbps":4}"#);
+    let p = enhance::blur_plan(30.0, &enh);
+    assert_eq!(enhance::blur_chunk(&p), 150);
+
+    let output = remux::output_path(&input);
+    let stage1 = remux::stage1_path(&output);
+    let progress = |_: f64, _: Option<f64>, _: &'static str| {};
+    match remux::blur_to_file(&report, &enh, &remux::frames_dir(&output), &stage1, &progress) {
+        Ok(()) => {}
+        Err(e) if e.contains("nvenc") || e.contains("NVENC") => {
+            eprintln!("NVENC not available, skipping: {e}");
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    let count = tools::command(tools::ffprobe().unwrap())
+        .args(["-v", "error", "-count_frames", "-select_streams", "v", "-show_entries",
+               "stream=nb_read_frames", "-of", "csv=p=0"])
+        .arg(&stage1)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "151");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
